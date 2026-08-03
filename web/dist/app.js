@@ -511,24 +511,28 @@
     let folders = state.folders;
     if (q) folders = folders.filter((f) => f.name.toLowerCase().includes(q));
 
+    const isAllSelected = !state.folderFilter && state.route.view === 'notes';
+    const isTrashSelected = state.route.view === 'trash';
+
     const rows = [];
-    // "All Notes" row (hidden when searching and not matching)
+    // "All Notes" row
     if (!q || 'all notes'.includes(q) || 'semua catatan'.includes(q)) {
-      rows.push(`<button class="browse-row" role="listitem" data-act="folder" data-folder="" aria-current="false">
-        ${icon('all', 16)}<span class="browse-name">All Notes</span><span class="browse-n">${active.length}</span>${icon('chev', 14)}
+      rows.push(`<button class="browse-row" role="listitem" data-act="folder" data-folder="" aria-current="${isAllSelected}">
+        ${icon('all', 16)}<span class="browse-name">All Notes</span><span class="browse-n">${active.length}</span>
       </button>`);
     }
     // Per-folder rows
     for (const f of folders) {
-      rows.push(`<button class="browse-row" role="listitem" data-act="folder" data-folder="${esc(f.id)}" aria-current="false">
+      const isSelected = state.folderFilter === f.id && state.route.view === 'notes';
+      rows.push(`<button class="browse-row" role="listitem" data-act="folder" data-folder="${esc(f.id)}" aria-current="${isSelected}">
         ${icon('folder', 16)}<span class="browse-name">${esc(f.name)}</span><span class="browse-n">${countFor(f.id)}</span>
         <button class="icon-btn sm browse-menu" data-act="folder-menu" data-folder="${esc(f.id)}" aria-label="Manage folder ${esc(f.name)}" title="Manage folder">${icon('more', 15)}</button>
       </button>`);
     }
     // Trash row at the bottom
     if (!q || 'trash'.includes(q) || 'sampah'.includes(q)) {
-      rows.push(`<button class="browse-row browse-trash" role="listitem" data-act="trash-browse" aria-current="false">
-        ${icon('trash', 16)}<span class="browse-name">Trash</span><span class="browse-n">${trashed}</span>${icon('chev', 14)}
+      rows.push(`<button class="browse-row browse-trash" role="listitem" data-act="trash-browse" aria-current="${isTrashSelected}">
+        ${icon('trash', 16)}<span class="browse-name">Trash</span><span class="browse-n">${trashed}</span>
       </button>`);
     }
 
@@ -1847,7 +1851,7 @@
       if (!reloading) return;
       location.reload();
     });
-    navigator.serviceWorker.register('/sw.js?v=24').then((reg) => {
+    navigator.serviceWorker.register('/sw.js?v=25').then((reg) => {
       reg.addEventListener('updatefound', () => {
         const worker = reg.installing;
         if (!worker) return;
