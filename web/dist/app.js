@@ -1851,7 +1851,7 @@
       if (!reloading) return;
       location.reload();
     });
-    navigator.serviceWorker.register('/sw.js?v=25').then((reg) => {
+    navigator.serviceWorker.register('/sw.js?v=26').then((reg) => {
       reg.addEventListener('updatefound', () => {
         const worker = reg.installing;
         if (!worker) return;
