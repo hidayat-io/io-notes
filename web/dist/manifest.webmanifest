@@ -1,7 +1,7 @@
 {
   "name": "io-notes",
   "short_name": "io-notes",
-  "description": "Catatan ringan yang tetap bekerja saat offline.",
+  "description": "Lightweight offline-first note-taking app.",
   "start_url": "/#/notes",
   "id": "/",
   "scope": "/",
@@ -9,7 +9,7 @@
   "orientation": "any",
   "background_color": "#f2f3f8",
   "theme_color": "#f2f3f8",
-  "lang": "id-ID",
+  "lang": "en-US",
   "dir": "ltr",
   "categories": ["productivity", "utilities"],
   "icons": [
@@ -18,7 +18,7 @@
     { "src": "/icon-note-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ],
   "shortcuts": [
-    { "name": "Catatan baru", "short_name": "Baru", "url": "/#/notes" },
+    { "name": "New note", "short_name": "New", "url": "/#/notes" },
     { "name": "Trash", "short_name": "Trash", "url": "/#/trash" }
   ]
 }

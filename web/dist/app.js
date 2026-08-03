@@ -47,7 +47,7 @@
 
   const decTitle = (n) => state.decrypted[n.id]?.title ?? n.title;
   const decContent = (n) => state.decrypted[n.id]?.content ?? n.content;
-  const titleOf = (n) => { const t = decTitle(n); const c = decContent(n); return (t.trim() || (c.split('\n').find((l) => l.trim()) || '').trim() || 'Catatan tanpa judul').slice(0, 120); };
+  const titleOf = (n) => { const t = decTitle(n); const c = decContent(n); return (t.trim() || (c.split('\n').find((l) => l.trim()) || '').trim() || 'Untitled note').slice(0, 120); };
   const snippetOf = (n) => decContent(n).replace(/\s+/g, ' ').trim().slice(0, 180);
   const isLocked = (n) => !!n.is_locked && !state.unlocked[n.id];
   const wordsOf = (t) => (t.trim() ? t.trim().split(/\s+/).length : 0);
@@ -88,20 +88,20 @@
 
   function relTime(ms) {
     const diff = Date.now() + state.clockOffset - ms;
-    if (diff < 45e3) return 'baru saja';
-    if (diff < 3.6e6) return `${Math.round(diff / 6e4)} mnt`;
-    if (diff < 864e5) return `${Math.round(diff / 36e5)} jam`;
+    if (diff < 45e3) return 'just now';
+    if (diff < 3.6e6) return `${Math.round(diff / 6e4)}m ago`;
+    if (diff < 864e5) return `${Math.round(diff / 36e5)}h ago`;
     const d = new Date(ms);
     const today = new Date();
     const dayDiff = Math.floor((today.setHours(0, 0, 0, 0) - new Date(ms).setHours(0, 0, 0, 0)) / 864e5);
-    if (dayDiff === 1) return 'kemarin';
-    if (dayDiff < 7) return `${dayDiff} hari`;
+    if (dayDiff === 1) return 'yesterday';
+    if (dayDiff < 7) return `${dayDiff}d ago`;
     const opts = d.getFullYear() === new Date().getFullYear() ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' };
-    return d.toLocaleDateString('id-ID', opts);
+    return d.toLocaleDateString('en-US', opts);
   }
 
   function fullTime(ms) {
-    return new Date(ms).toLocaleString('id-ID', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    return new Date(ms).toLocaleString('en-US', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
   }
 
   // Escape text while highlighting the first match of `q`.
@@ -209,7 +209,7 @@
     } catch {
       // navigator.onLine is not trustworthy (it stays true behind captive portals and
       // after some reloads), so a failed fetch is the real signal that we are offline.
-      const err = new Error('Butuh koneksi internet untuk aksi ini.');
+      const err = new Error('Internet connection required for this action.');
       err.offline = true;
       throw err;
     }
@@ -221,7 +221,7 @@
       meta('clock_offset_ms', state.clockOffset).catch(() => {});
     }
     if (!res.ok) {
-      const err = new Error(body.error?.message || `Terjadi kesalahan (HTTP ${res.status})`);
+      const err = new Error(body.error?.message || `An error occurred (HTTP ${res.status})`);
       err.status = res.status;
       err.code = body.error?.code;
       const retryAfter = Number(res.headers.get('Retry-After'));
@@ -231,7 +231,7 @@
     return body;
   }
 
-  const netMessage = (e) => (e.offline || !state.online ? 'Butuh koneksi internet untuk aksi ini.' : e.message);
+  const netMessage = (e) => (e.offline || !state.online ? 'Internet connection required for this action.' : e.message);
 
   /* -------------------------------------------------------------- routing */
 
@@ -304,21 +304,21 @@
   function shellHTML() {
     return `
 <div class="shell" id="shell" data-pane="list">
-  <button class="skip" data-act="focus-content">Lewati ke editor</button>
+  <button class="skip" data-act="focus-content">Skip to editor</button>
   
-  <aside class="folder-nav" aria-label="Navigasi Folder">
+  <aside class="folder-nav" aria-label="Folder Navigation">
     <div class="side-head">
       <span class="brand-mark" aria-hidden="true"></span>
       <h1 class="brand-name">io-notes</h1>
     </div>
     <div class="search">
       <span class="search-icon">${icon('search', 16)}</span>
-      <input id="q" type="search" placeholder="Cari catatan…" aria-label="Cari catatan" autocomplete="off" spellcheck="false" enterkeyhint="search">
-      <button class="search-clear" data-act="clear-search" aria-label="Bersihkan pencarian" hidden>${icon('x', 15)}</button>
+      <input id="q" type="search" placeholder="Search notes…" aria-label="Search notes" autocomplete="off" spellcheck="false" enterkeyhint="search">
+      <button class="search-clear" data-act="clear-search" aria-label="Clear search" hidden>${icon('x', 15)}</button>
     </div>
     <div class="list-head">
-      <span class="list-title">Folder</span>
-      <button class="icon-btn sm" data-act="new-folder" aria-label="Buat folder baru" title="Folder baru">${icon('plus', 15)}</button>
+      <span class="list-title">Folders</span>
+      <button class="icon-btn sm" data-act="new-folder" aria-label="Create new folder" title="New folder">${icon('plus', 15)}</button>
     </div>
     <div class="list" id="folder-list-desktop" role="list"></div>
     <footer class="side-foot">
@@ -329,26 +329,26 @@
           <span class="sync" id="sync" data-state="local"><span class="label" id="sync-label" role="status" aria-live="polite"></span></span>
         </span>
       </div>
-      <button class="icon-btn" data-act="theme" id="theme-btn" aria-label="Ganti tema"></button>
-      <button class="icon-btn" data-act="logout" aria-label="Keluar dari akun" title="Keluar">${icon('logout')}</button>
+      <button class="icon-btn" data-act="theme" id="theme-btn" aria-label="Toggle theme"></button>
+      <button class="icon-btn" data-act="logout" aria-label="Sign out" title="Sign out">${icon('logout')}</button>
     </footer>
   </aside>
 
-  <aside class="sidebar" aria-label="Daftar Catatan">
+  <aside class="sidebar" aria-label="Note List">
     <div class="side-head" id="mobile-side-head">
       <span class="brand-mark" aria-hidden="true"></span>
       <h1 class="brand-name">io-notes</h1>
-      <button class="icon-btn accent" data-act="new" aria-label="Catatan baru" title="Catatan baru (Ctrl+N)">${icon('plus', 20)}</button>
+      <button class="icon-btn accent" data-act="new" aria-label="New note" title="New note (Ctrl+N)">${icon('plus', 20)}</button>
     </div>
     <div class="search" id="mobile-search">
       <span class="search-icon">${icon('search', 16)}</span>
-      <input id="q-mobile" type="search" placeholder="Cari catatan…" aria-label="Cari catatan" autocomplete="off" spellcheck="false" enterkeyhint="search">
-      <button class="search-clear" data-act="clear-search" aria-label="Bersihkan pencarian" hidden>${icon('x', 15)}</button>
+      <input id="q-mobile" type="search" placeholder="Search notes…" aria-label="Search notes" autocomplete="off" spellcheck="false" enterkeyhint="search">
+      <button class="search-clear" data-act="clear-search" aria-label="Clear search" hidden>${icon('x', 15)}</button>
     </div>
     <div class="list-head" id="list-head">
-      <span class="list-title" id="list-title">Folder</span>
-      <button class="icon-btn sm" data-act="new-folder" id="btn-new-folder" aria-label="Buat folder baru" title="Folder baru">${icon('plus', 15)}</button>
-      <button class="icon-btn accent" data-act="new" id="btn-new-note-desktop" aria-label="Catatan baru" title="Catatan baru (Ctrl+N)" style="display:none;margin-left:auto">${icon('plus', 20)}</button>
+      <span class="list-title" id="list-title">Folders</span>
+      <button class="icon-btn sm" data-act="new-folder" id="btn-new-folder" aria-label="Create new folder" title="New folder">${icon('plus', 15)}</button>
+      <button class="icon-btn accent" data-act="new" id="btn-new-note-desktop" aria-label="New note" title="New note (Ctrl+N)" style="display:none;margin-left:auto">${icon('plus', 20)}</button>
     </div>
     <div class="list" id="list" role="list"></div>
     <footer class="side-foot" id="mobile-foot">
@@ -359,11 +359,11 @@
           <span class="sync" id="sync-mob" data-state="local"><span class="label" id="sync-label-mob" role="status" aria-live="polite"></span></span>
         </span>
       </div>
-      <button class="icon-btn" data-act="theme" id="theme-btn-mob" aria-label="Ganti tema"></button>
-      <button class="icon-btn" data-act="logout" aria-label="Keluar dari akun" title="Keluar">${icon('logout')}</button>
+      <button class="icon-btn" data-act="theme" id="theme-btn-mob" aria-label="Toggle theme"></button>
+      <button class="icon-btn" data-act="logout" aria-label="Sign out" title="Sign out">${icon('logout')}</button>
     </footer>
   </aside>
-  <section class="editor" id="editor" aria-label="Editor catatan"></section>
+  <section class="editor" id="editor" aria-label="Note Editor"></section>
 </div>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 <dialog class="modal" id="modal"></dialog>`;
@@ -457,12 +457,12 @@
     if (isDesktop || state.listMode === 'notes') {
       if (btn) btn.hidden = true;
       if (state.route.view === 'trash') { el.textContent = 'Trash'; return; }
-      if (state.folderFilter) { el.textContent = folderName(state.folderFilter) || 'Catatan'; return; }
-      el.textContent = 'Semua Catatan';
+      if (state.folderFilter) { el.textContent = folderName(state.folderFilter) || 'Notes'; return; }
+      el.textContent = 'All Notes';
       return;
     }
 
-    el.textContent = 'Folder';
+    el.textContent = 'Folders';
     if (btn) btn.hidden = false;
   }
 
@@ -512,17 +512,17 @@
     if (q) folders = folders.filter((f) => f.name.toLowerCase().includes(q));
 
     const rows = [];
-    // "Semua Catatan" row (hidden when searching and not matching)
-    if (!q || 'semua catatan'.includes(q)) {
+    // "All Notes" row (hidden when searching and not matching)
+    if (!q || 'all notes'.includes(q) || 'semua catatan'.includes(q)) {
       rows.push(`<button class="browse-row" role="listitem" data-act="folder" data-folder="" aria-current="false">
-        ${icon('all', 16)}<span class="browse-name">Semua Catatan</span><span class="browse-n">${active.length}</span>${icon('chev', 14)}
+        ${icon('all', 16)}<span class="browse-name">All Notes</span><span class="browse-n">${active.length}</span>${icon('chev', 14)}
       </button>`);
     }
     // Per-folder rows
     for (const f of folders) {
       rows.push(`<button class="browse-row" role="listitem" data-act="folder" data-folder="${esc(f.id)}" aria-current="false">
         ${icon('folder', 16)}<span class="browse-name">${esc(f.name)}</span><span class="browse-n">${countFor(f.id)}</span>
-        <button class="icon-btn sm browse-menu" data-act="folder-menu" data-folder="${esc(f.id)}" aria-label="Kelola folder ${esc(f.name)}" title="Kelola folder">${icon('more', 15)}</button>
+        <button class="icon-btn sm browse-menu" data-act="folder-menu" data-folder="${esc(f.id)}" aria-label="Manage folder ${esc(f.name)}" title="Manage folder">${icon('more', 15)}</button>
       </button>`);
     }
     // Trash row at the bottom
@@ -532,7 +532,7 @@
       </button>`);
     }
 
-    if (!rows.length) return `<div class="list-empty">${icon('search', 22)}<p>Tidak ada folder yang cocok dengan "${esc(state.query.trim())}".</p></div>`;
+    if (!rows.length) return `<div class="list-empty">${icon('search', 22)}<p>No folders match "${esc(state.query.trim())}".</p></div>`;
     return rows.join('');
   }
 
@@ -542,16 +542,16 @@
     const showChip = !state.folderFilter && state.folders.length > 0;
 
     // Back affordance row
-    const backRow = `<button class="drill-back" role="listitem" data-act="drill-back" aria-label="Kembali ke daftar folder">
-      ${icon('left', 14)}<span>Folder</span>
+    const backRow = `<button class="drill-back" role="listitem" data-act="drill-back" aria-label="Back to folders">
+      ${icon('left', 14)}<span>Folders</span>
     </button>`;
 
     if (!notes.length) return backRow + emptyListHTML();
 
     return backRow + notes.map((n) => {
       const locked = isLocked(n);
-      const title = locked ? 'Catatan terkunci' : titleOf(n);
-      const snippet = locked ? 'Terkunci — buka dengan password' : snippetOf(n) || 'Belum ada isi';
+      const title = locked ? 'Locked note' : titleOf(n);
+      const snippet = locked ? 'Locked — enter password to unlock' : snippetOf(n) || 'Empty note';
       const when = state.route.view === 'trash' ? n.deleted_at || n.updated_at : n.updated_at;
       const chip = showChip && n.folder_id ? `<span class="chip">${icon('folder', 11)}<span>${esc(folderName(n.folder_id))}</span></span>` : '';
       return `<button class="item" role="listitem" data-act="open" data-id="${esc(n.id)}" aria-current="${state.route.noteId === n.id}">
@@ -566,10 +566,10 @@
   }
 
   function emptyListHTML() {
-    if (state.query.trim()) return `<div class="list-empty">${icon('search', 22)}<p>Tidak ada catatan yang cocok dengan “${esc(state.query.trim())}”.</p></div>`;
-    if (state.route.view === 'trash') return `<div class="list-empty">${icon('trash', 22)}<p>Trash kosong.</p></div>`;
-    if (state.folderFilter) return `<div class="list-empty">${icon('folder', 22)}<p>Folder “${esc(folderName(state.folderFilter))}” masih kosong.</p><button class="btn" data-act="new">Buat catatan</button></div>`;
-    return `<div class="list-empty">${icon('note', 22)}<p>Belum ada catatan.</p><button class="btn primary" data-act="new">Buat catatan</button></div>`;
+    if (state.query.trim()) return `<div class="list-empty">${icon('search', 22)}<p>No notes match “${esc(state.query.trim())}”.</p></div>`;
+    if (state.route.view === 'trash') return `<div class="list-empty">${icon('trash', 22)}<p>Trash is empty.</p></div>`;
+    if (state.folderFilter) return `<div class="list-empty">${icon('folder', 22)}<p>Folder “${esc(folderName(state.folderFilter))}” is empty.</p><button class="btn" data-act="new">Create note</button></div>`;
+    return `<div class="list-empty">${icon('note', 22)}<p>No notes yet.</p><button class="btn primary" data-act="new">Create note</button></div>`;
   }
 
   function paintIdentity() {
@@ -578,7 +578,7 @@
     const dName = $('#who-name');
     const dAvatar = $('#avatar');
     if (dName) {
-      dName.textContent = u.name || u.email || 'Akun';
+      dName.textContent = u.name || u.email || 'Account';
       dName.title = u.email || '';
     }
     const initials = (u.name || u.email || '?').trim().slice(0, 1).toUpperCase();
@@ -591,7 +591,7 @@
     const mName = $('#who-name-mob');
     const mAvatar = $('#avatar-mob');
     if (mName) {
-      mName.textContent = u.name || u.email || 'Akun';
+      mName.textContent = u.name || u.email || 'Account';
       mName.title = u.email || '';
     }
     if (mAvatar && mAvatar.dataset.for !== u.id) {
@@ -626,44 +626,44 @@
   function editorHTML(n) {
     if (!n) {
       return state.route.view === 'trash'
-        ? `<div class="state"><span class="state-icon">${icon('trash', 24)}</span><h2>Trash</h2><p>Pilih catatan untuk memulihkannya. Catatan di sini tidak muncul di daftar utama.</p></div>`
-        : `<div class="state"><span class="state-icon">${icon('note', 24)}</span><h2>Belum ada yang dibuka</h2><p>Pilih catatan dari daftar, atau mulai yang baru.</p><button class="btn primary" data-act="new">${icon('plus', 16)} Catatan baru</button></div>`;
+        ? `<div class="state"><span class="state-icon">${icon('trash', 24)}</span><h2>Trash</h2><p>Select a note to restore it. Trashed notes do not appear in the main list.</p></div>`
+        : `<div class="state"><span class="state-icon">${icon('note', 24)}</span><h2>No note selected</h2><p>Select a note from the list or create a new one.</p><button class="btn primary" data-act="new">${icon('plus', 16)} New note</button></div>`;
     }
 
     const head = (extra) => `<header class="editor-head">
-      <button class="icon-btn back" data-act="back" aria-label="Kembali ke daftar">${icon('left', 20)}</button>${extra}
+      <button class="icon-btn back" data-act="back" aria-label="Back to list">${icon('left', 20)}</button>${extra}
     </header>`;
 
     if (isLocked(n)) {
-      return head(`<span class="crumb"><span class="name">Catatan terkunci</span></span><span class="head-spacer"></span>`) +
+      return head(`<span class="crumb"><span class="name">Locked note</span></span><span class="head-spacer"></span>`) +
         `<div class="state">
            <span class="state-icon">${icon('lock', 24)}</span>
-           <h2>Catatan ini terkunci</h2>
-           <p>Masukkan password catatan untuk membukanya. Membuka kunci memerlukan koneksi internet.</p>
+           <h2>This note is locked</h2>
+           <p>Enter the note password to unlock it. Unlocking requires internet connection.</p>
            <form data-act="unlock-submit">
-             <input id="note-password" type="password" placeholder="Password catatan" autocomplete="current-password" aria-label="Password catatan">
+             <input id="note-password" type="password" placeholder="Note password" autocomplete="current-password" aria-label="Note password">
              <p class="err" id="unlock-error" role="alert"></p>
-             <button class="btn primary" type="submit">Buka catatan</button>
-             <button class="btn ghost" type="button" data-act="forgot">Lupa password? Kirim link reset</button>
+             <button class="btn primary" type="submit">Unlock note</button>
+             <button class="btn ghost" type="button" data-act="forgot">Forgot password? Send reset link</button>
            </form>
          </div>`;
     }
 
     const inTrash = !!n.deleted_at;
     const crumb = inTrash
-      ? `<span class="crumb">${icon('trash', 15)}<span class="name">Di Trash</span></span>`
-      : `<button class="crumb" data-act="move" title="Pindahkan ke folder">${icon(n.folder_id ? 'folder' : 'all', 15)}<span class="name">${esc(n.folder_id ? folderName(n.folder_id) : 'Tanpa folder')}</span></button>`;
+      ? `<span class="crumb">${icon('trash', 15)}<span class="name">In Trash</span></span>`
+      : `<button class="crumb" data-act="move" title="Move to folder">${icon(n.folder_id ? 'folder' : 'all', 15)}<span class="name">${esc(n.folder_id ? folderName(n.folder_id) : 'No folder')}</span></button>`;
 
     const actions = inTrash
-      ? `<button class="btn" data-act="restore">${icon('restore', 15)} Pulihkan</button>`
-      : `<button class="icon-btn ${n.is_locked ? 'on' : ''}" data-act="lock" aria-label="${n.is_locked ? 'Kelola kunci catatan' : 'Kunci catatan dengan password'}" title="${n.is_locked ? 'Catatan terkunci' : 'Kunci catatan'}">${icon(n.is_locked ? 'lock' : 'unlock')}</button>
-         <button class="icon-btn danger" data-act="delete" aria-label="Pindahkan catatan ke Trash" title="Pindahkan ke Trash">${icon('trash')}</button>`;
+      ? `<button class="btn" data-act="restore">${icon('restore', 15)} Restore</button>`
+      : `<button class="icon-btn ${n.is_locked ? 'on' : ''}" data-act="lock" aria-label="${n.is_locked ? 'Manage note lock' : 'Lock note with password'}" title="${n.is_locked ? 'Locked note' : 'Lock note'}">${icon(n.is_locked ? 'lock' : 'unlock')}</button>
+         <button class="icon-btn danger" data-act="delete" aria-label="Move note to Trash" title="Move to Trash">${icon('trash')}</button>`;
 
     return head(`${crumb}<span class="head-spacer"></span><span class="save-state" id="save-state"></span><div class="actions">${actions}</div>`) +
       `<div class="editor-body">
          <div class="page">
-           <textarea class="title" id="title" rows="1" maxlength="${MAX_TITLE}" placeholder="Judul" aria-label="Judul catatan" spellcheck="false" ${inTrash ? 'readonly' : ''}></textarea>
-           <textarea class="content" id="content" placeholder="Mulai menulis…" aria-label="Isi catatan" ${inTrash ? 'readonly' : ''}></textarea>
+           <textarea class="title" id="title" rows="1" maxlength="${MAX_TITLE}" placeholder="Title" aria-label="Note title" spellcheck="false" ${inTrash ? 'readonly' : ''}></textarea>
+           <textarea class="content" id="content" placeholder="Start writing…" aria-label="Note content" ${inTrash ? 'readonly' : ''}></textarea>
          </div>
        </div>
        <footer class="editor-foot">
@@ -719,13 +719,13 @@
     }
 
     const crumbName = $('.crumb .name');
-    if (crumbName && !n.deleted_at) crumbName.textContent = n.folder_id ? folderName(n.folder_id) : 'Tanpa folder';
+    if (crumbName && !n.deleted_at) crumbName.textContent = n.folder_id ? folderName(n.folder_id) : 'No folder';
 
     const words = wordsOf(content.value);
-    $('#meta-words').textContent = `${words} kata · ${content.value.length} karakter`;
+    $('#meta-words').textContent = `${words} words · ${content.value.length} characters`;
     const when = n.deleted_at || n.updated_at;
     const meta = $('#meta-time');
-    meta.textContent = `${n.deleted_at ? 'Dihapus' : 'Diubah'} ${relTime(when)}`;
+    meta.textContent = `${n.deleted_at ? 'Deleted' : 'Modified'} ${relTime(when)}`;
     meta.title = fullTime(when);
   }
 
@@ -733,7 +733,7 @@
     const el = $('#save-state');
     if (!el) return;
     el.dataset.state = kind;
-    el.textContent = kind === 'saving' ? 'Menyimpan…' : kind === 'saved' ? 'Tersimpan' : '';
+    el.textContent = kind === 'saving' ? 'Saving…' : kind === 'saved' ? 'Saved' : '';
   }
 
   function focusContentEnd() {
@@ -779,8 +779,8 @@
     const plainContent = state.decrypted[n.id]?.content ?? n.content;
     if (overContentLimit(plainContent)) {
       setSaveState('');
-      setSync('error', 'Catatan terlalu besar');
-      toast('Catatan melebihi batas 1 MB dan tidak bisa disimpan. Pecah menjadi beberapa catatan.', { duration: 0 });
+      setSync('error', 'Note too large');
+      toast('Note exceeds 1 MB limit and cannot be saved. Split it into multiple notes.', { duration: 0 });
       return;
     }
     n.updated_at = stamp(n.updated_at);
@@ -840,7 +840,7 @@
     navigate('notes', remaining[0]?.id || null, true);
     paint();
     scheduleSync();
-    toast('Catatan dipindahkan ke Trash', { actionLabel: 'Urungkan', onAction: () => void undelete(n.id) });
+    toast('Note moved to Trash', { actionLabel: 'Undo', onAction: () => void undelete(n.id) });
   }
 
   async function undelete(id) {
@@ -859,7 +859,7 @@
     const n = currentNote();
     if (!n || !n.deleted_at) return;
     await undelete(n.id);
-    toast('Catatan dipulihkan');
+    toast('Note restored');
   }
 
   /* --------------------------------------------------------------- folders */
@@ -911,10 +911,10 @@
 
   async function createFolder() {
     const values = await modal({
-      title: 'Folder baru',
-      description: 'Kelompokkan catatan supaya lebih mudah ditemukan.',
-      fields: [{ name: 'name', label: 'Nama folder', maxlength: 80, placeholder: 'Misalnya: Kerja', required: true }],
-      confirmText: 'Buat folder',
+      title: 'New folder',
+      description: 'Group notes to organize them easily.',
+      fields: [{ name: 'name', label: 'Folder name', maxlength: 80, placeholder: 'e.g. Work', required: true }],
+      confirmText: 'Create folder',
     });
     if (!values) return;
     try {
@@ -933,10 +933,10 @@
     if (!f) return;
     const choice = await modal({
       title: f.name,
-      description: 'Apa yang ingin dilakukan dengan folder ini?',
+      description: 'What would you like to do with this folder?',
       choices: [
-        { value: 'rename', label: 'Ubah nama', icon: 'edit' },
-        { value: 'delete', label: 'Hapus folder', icon: 'trash', danger: true },
+        { value: 'rename', label: 'Rename', icon: 'edit' },
+        { value: 'delete', label: 'Delete folder', icon: 'trash', danger: true },
       ],
     });
     if (choice === 'rename') await renameFolder(f);
@@ -945,9 +945,9 @@
 
   async function renameFolder(f) {
     const values = await modal({
-      title: 'Ubah nama folder',
-      fields: [{ name: 'name', label: 'Nama folder', value: f.name, maxlength: 80, required: true }],
-      confirmText: 'Simpan',
+      title: 'Rename folder',
+      fields: [{ name: 'name', label: 'Folder name', value: f.name, maxlength: 80, required: true }],
+      confirmText: 'Save',
     });
     if (!values) return;
     try {
@@ -965,9 +965,9 @@
   async function deleteFolder(f) {
     const count = state.notes.filter((n) => !n.deleted_at && n.folder_id === f.id).length;
     const ok = await modal({
-      title: `Hapus folder “${f.name}”?`,
-      description: count ? `${count} catatan di dalamnya tidak ikut terhapus — catatan akan pindah ke “Tanpa folder”.` : 'Folder kosong ini akan dihapus.',
-      confirmText: 'Hapus folder',
+      title: `Delete folder “${f.name}”?`,
+      description: count ? `${count} notes inside will not be deleted — they will move to “No folder”.` : 'This empty folder will be deleted.',
+      confirmText: 'Delete folder',
       danger: true,
     });
     if (!ok) return;
@@ -978,7 +978,7 @@
       await meta('folders', state.folders);
       await sync();
       paint();
-      toast(`Folder “${f.name}” dihapus`);
+      toast(`Folder “${f.name}” deleted`);
     } catch (e) {
       toast(netMessage(e));
     }
@@ -988,12 +988,12 @@
     const n = currentNote();
     if (!n || n.deleted_at) return;
     const choice = await modal({
-      title: 'Pindahkan ke folder',
+      title: 'Move to folder',
       choices: [
-        { value: '', label: 'Tanpa folder', icon: 'all', selected: !n.folder_id },
+        { value: '', label: 'No folder', icon: 'all', selected: !n.folder_id },
         ...state.folders.map((f) => ({ value: f.id, label: f.name, icon: 'folder', selected: n.folder_id === f.id })),
       ],
-      emptyText: 'Belum ada folder. Buat folder dulu dari panel kiri.',
+      emptyText: 'No folders yet. Create a folder first.',
     });
     if (choice === null || choice === undefined) return;
     await flushSave();
@@ -1020,48 +1020,48 @@
   async function lockMenu() {
     let n = currentNote();
     if (!n) return;
-    if (!state.online) { toast('Kunci catatan butuh koneksi internet.'); return; }
+    if (!state.online) { toast('Locking notes requires internet connection.'); return; }
 
     if (!n.is_locked) {
       const values = await modal({
-        title: 'Kunci catatan',
-        description: 'Enkripsi AES-256 end-to-end — konten dienkripsi di perangkat, plaintext tidak pernah disimpan lokal.',
+        title: 'Lock note',
+        description: 'AES-256 end-to-end encryption — content is encrypted locally, plaintext is never stored on server.',
         fields: [
-          { name: 'password', label: 'Password baru', type: 'password', minlength: 8, required: true, placeholder: 'Minimal 8 karakter', autocomplete: 'new-password' },
-          { name: 'confirm', label: 'Ulangi password', type: 'password', required: true, autocomplete: 'new-password' },
+          { name: 'password', label: 'New password', type: 'password', minlength: 8, required: true, placeholder: 'At least 8 characters', autocomplete: 'new-password' },
+          { name: 'confirm', label: 'Confirm password', type: 'password', required: true, autocomplete: 'new-password' },
         ],
-        confirmText: 'Kunci catatan',
-        validate: (v) => (v.password.length < 8 ? 'Password minimal 8 karakter.' : v.password !== v.confirm ? 'Password tidak sama.' : null),
+        confirmText: 'Lock note',
+        validate: (v) => (v.password.length < 8 ? 'Password must be at least 8 characters.' : v.password !== v.confirm ? 'Passwords do not match.' : null),
       });
       if (!values) return;
       const ready = await ensureOnServer(n);
-      if (!ready) { toast('Catatan belum tersinkron. Coba lagi sebentar.'); return; }
-      await applyPassword(ready, values.password, 'Catatan dikunci');
+      if (!ready) { toast('Note not synced yet. Please try again shortly.'); return; }
+      await applyPassword(ready, values.password, 'Note locked');
       return;
     }
 
     const choice = await modal({
-      title: 'Catatan terkunci',
-      description: 'Password aktif untuk catatan ini.',
+      title: 'Locked note',
+      description: 'Password protection is enabled for this note.',
       choices: [
-        { value: 'change', label: 'Ganti password', icon: 'lock' },
-        { value: 'remove', label: 'Hapus password', icon: 'unlock', danger: true },
+        { value: 'change', label: 'Change password', icon: 'lock' },
+        { value: 'remove', label: 'Remove password', icon: 'unlock', danger: true },
       ],
     });
     if (choice === 'change') {
       const values = await modal({
-        title: 'Ganti password catatan',
+        title: 'Change note password',
         fields: [
-          { name: 'password', label: 'Password baru', type: 'password', minlength: 8, required: true, autocomplete: 'new-password' },
-          { name: 'confirm', label: 'Ulangi password', type: 'password', required: true, autocomplete: 'new-password' },
+          { name: 'password', label: 'New password', type: 'password', minlength: 8, required: true, autocomplete: 'new-password' },
+          { name: 'confirm', label: 'Confirm password', type: 'password', required: true, autocomplete: 'new-password' },
         ],
-        confirmText: 'Simpan password',
-        validate: (v) => (v.password.length < 8 ? 'Password minimal 8 karakter.' : v.password !== v.confirm ? 'Password tidak sama.' : null),
+        confirmText: 'Save password',
+        validate: (v) => (v.password.length < 8 ? 'Password must be at least 8 characters.' : v.password !== v.confirm ? 'Passwords do not match.' : null),
       });
-      if (values) await applyPassword(n, values.password, 'Password diperbarui');
+      if (values) await applyPassword(n, values.password, 'Password updated');
     } else if (choice === 'remove') {
-      const ok = await modal({ title: 'Hapus password?', description: 'Catatan ini bisa dibuka siapa saja yang masuk ke akun kamu.', confirmText: 'Hapus password', danger: true });
-      if (ok) await applyPassword(n, '', 'Password dihapus');
+      const ok = await modal({ title: 'Remove password?', description: 'Anyone signed into your account will be able to read this note.', confirmText: 'Remove password', danger: true });
+      if (ok) await applyPassword(n, '', 'Password removed');
     }
   }
 
@@ -1112,7 +1112,7 @@
     const input = $('#note-password');
     const err = $('#unlock-error');
     err.textContent = '';
-    if (!state.online) { err.textContent = 'Butuh koneksi internet untuk membuka kunci.'; return; }
+    if (!state.online) { err.textContent = 'Internet connection required to unlock.'; return; }
     try {
       await api(`/api/v1/notes/${encodeURIComponent(n.id)}/unlock`, { method: 'POST', body: JSON.stringify({ password: input.value }) });
       state.unlocked[n.id] = true;
@@ -1125,14 +1125,14 @@
           state.decrypted[n.id] = { title, content };
           state._keys[n.id] = key;
         } catch {
-          toast('Dekripsi gagal — konten mungkin dienkripsi dengan password berbeda.');
+          toast('Decryption failed — content may be encrypted with a different password.');
         }
       }
 
       paint();
       requestAnimationFrame(() => $('#content')?.focus({ preventScroll: true }));
     } catch (error) {
-      err.textContent = error.status === 401 ? 'Password salah.' : netMessage(error);
+      err.textContent = error.status === 401 ? 'Incorrect password.' : netMessage(error);
       input.select();
     }
   }
@@ -1142,7 +1142,7 @@
     if (!n) return;
     try {
       await api(`/api/v1/notes/${encodeURIComponent(n.id)}/password/reset-request`, { method: 'POST', body: '{}' });
-      toast('Link reset dikirim ke email akun kamu.');
+      toast('Reset link sent to your account email.');
     } catch (e) {
       $('#unlock-error').textContent = netMessage(e);
     }
@@ -1173,13 +1173,13 @@
   }
 
   const SYNC_LABELS = {
-    error: 'Sync gagal — coba lagi',
-    auth: 'Login diperlukan untuk sync',
-    offline: 'Offline — tersimpan lokal',
-    saving: 'Menyimpan…',
-    syncing: 'Menyinkronkan…',
-    synced: 'Tersinkron',
-    local: 'Tersimpan lokal',
+    error: 'Sync failed — retry',
+    auth: 'Sign in required to sync',
+    offline: 'Offline — saved locally',
+    saving: 'Saving…',
+    syncing: 'Syncing…',
+    synced: 'Synced',
+    local: 'Saved locally',
   };
 
   function setSync(kind, label) {
@@ -1193,7 +1193,7 @@
   async function settleSyncState() {
     const pending = await outboxAll().catch(() => []);
     const stuck = pending.filter((p) => blockedNotes.has(p.id)).length;
-    if (stuck) { setSync('error', `${stuck} catatan gagal disinkronkan`); return; }
+    if (stuck) { setSync('error', `${stuck} notes failed to sync`); return; }
     if (dirtyId) { setSync('saving'); return; }
     if (pending.length) { setSync(state.online ? 'local' : 'offline'); return; }
     setSync('synced');
@@ -1333,7 +1333,7 @@
       // 400/409 are programming or validation faults: retrying cannot fix them.
       if (e.status === 400 || e.status === 409) {
         for (const row of batch) blockedNotes.add(row.id);
-        toast(`${batch.length} catatan ditolak server dan berhenti disinkronkan. Isinya tetap aman di perangkat ini.`, { duration: 0 });
+        toast(`${batch.length} notes rejected by server and paused from syncing. Content remains safe on this device.`, { duration: 0 });
         return;
       }
       throw e;
@@ -1452,8 +1452,8 @@
 
   function onSessionExpired() {
     setSync('auth');
-    toast('Sesi berakhir. Catatan tetap tersimpan di perangkat ini.', {
-      actionLabel: 'Masuk lagi',
+    toast('Session expired. Your notes remain saved on this device.', {
+      actionLabel: 'Sign in again',
       duration: 0,
       onAction: async () => { await flushSave(); await meta('cached_user', null); state.user = null; shellMounted = false; paint(); },
     });
@@ -1470,15 +1470,15 @@
   <section class="login-card">
     <div class="brand-mark" aria-hidden="true"></div>
     <h1>io-notes</h1>
-    <p class="sub">Catatan ringan yang tetap bekerja saat offline.</p>
+    <p class="sub">Lightweight offline-first note-taking app.</p>
     ${dev ? `
       <div class="field"><label for="dev-email">Email</label><input id="dev-email" type="email" autocomplete="username" value="demo@example.com"></div>
-      <div class="field"><label for="dev-name">Nama</label><input id="dev-name" autocomplete="name" value="Demo User"></div>
-      <button class="btn primary" id="dev-login">Masuk lokal</button>
-      <p class="login-note">Mode dev — hanya untuk pengembangan lokal.</p>`
+      <div class="field"><label for="dev-name">Name</label><input id="dev-name" autocomplete="name" value="Demo User"></div>
+      <button class="btn primary" id="dev-login">Local Sign In</button>
+      <p class="login-note">Dev Mode — local development only.</p>`
       : `<div id="google-button"></div>
-         <p class="login-note" id="login-note">${state.online ? 'Login pertama memerlukan internet.' : 'Kamu sedang offline. Sambungkan internet untuk masuk.'}</p>`}
-    ${cached ? `<div class="divider">atau</div><button class="btn block" id="offline-open">Buka catatan offline</button>` : ''}
+         <p class="login-note" id="login-note">${state.online ? 'First sign-in requires internet connection.' : 'You are offline. Connect to the internet to sign in.'}</p>`}
+    ${cached ? `<div class="divider">or</div><button class="btn block" id="offline-open">Open offline notes</button>` : ''}
   </section>
 </main>`;
 
@@ -1500,14 +1500,14 @@
 
   function loadGoogleSignIn() {
     const note = $('#login-note');
-    if (!cfg.googleClientId) { showLoginError('GOOGLE_CLIENT_ID belum dikonfigurasi di server.'); return; }
+    if (!cfg.googleClientId) { showLoginError('GOOGLE_CLIENT_ID not configured on server.'); return; }
     if (!state.online) return;
     const s = document.createElement('script');
     s.src = 'https://accounts.google.com/gsi/client';
     s.async = true;
-    s.onerror = () => showLoginError('Gagal memuat Google Sign-In. Periksa koneksi internet.');
+    s.onerror = () => showLoginError('Failed to load Google Sign-In. Check internet connection.');
     s.onload = () => {
-      if (!window.google?.accounts?.id) { showLoginError('Google Sign-In tidak tersedia.'); return; }
+      if (!window.google?.accounts?.id) { showLoginError('Google Sign-In unavailable.'); return; }
       window.google.accounts.id.initialize({
         client_id: cfg.googleClientId,
         callback: async (r) => {
@@ -1516,7 +1516,7 @@
         },
       });
       window.google.accounts.id.renderButton($('#google-button'), { theme: 'outline', size: 'large', text: 'signin_with', width: 320 });
-      if (note) note.textContent = 'Login pertama memerlukan internet.';
+      if (note) note.textContent = 'First sign-in requires internet connection.';
     };
     document.head.appendChild(s);
   }
@@ -1538,11 +1538,11 @@
   async function confirmLogout() {
     const pending = (await outboxAll()).length;
     const ok = await modal({
-      title: 'Keluar dari io-notes?',
+      title: 'Sign out of io-notes?',
       description: pending
-        ? `Ada ${pending} perubahan yang belum tersinkron. Sambungkan internet dulu supaya tidak hilang saat data lokal dibersihkan.`
-        : 'Catatan tetap aman di server dan bisa dibuka lagi setelah masuk.',
-      confirmText: 'Keluar',
+        ? `You have ${pending} unsynced changes. Connect to internet first to prevent loss.`
+        : 'Notes remain safe on the server and will reload when you sign in again.',
+      confirmText: 'Sign out',
       danger: true,
     });
     if (!ok) return;
@@ -1550,7 +1550,7 @@
     try {
       await api('/api/v1/auth/logout', { method: 'POST', body: '{}' });
     } catch (e) {
-      if (!state.online) { toast('Logout memerlukan koneksi internet.'); return; }
+      if (!state.online) { toast('Signing out requires internet connection.'); return; }
       if (e.status !== 401) { toast(e.message); return; }
     }
     await meta('cached_user', null);
@@ -1567,7 +1567,7 @@
 
   /* --------------------------------------------------------------- modals */
 
-  function modal({ title, description, fields, choices, confirmText = 'Simpan', cancelText = 'Batal', danger = false, validate, emptyText }) {
+  function modal({ title, description, fields, choices, confirmText = 'Save', cancelText = 'Cancel', danger = false, validate, emptyText }) {
     const dlg = $('#modal');
     if (!dlg) return Promise.resolve(null);
 
@@ -1575,7 +1575,7 @@
     const body = isChoice
       ? (choices.length
         ? `<div class="modal-choices">${choices.map((c) => `<button type="button" class="btn block choice ${c.danger ? 'danger' : ''}" data-choice="${esc(c.value)}">${icon(c.icon || 'folder', 16)}<span class="choice-label">${esc(c.label)}</span>${c.selected ? `<span class="choice-check">${icon('check', 14)}</span>` : ''}</button>`).join('')}</div>`
-        : `<p class="desc">${esc(emptyText || 'Belum ada pilihan.')}</p>`)
+        : `<p class="desc">${esc(emptyText || 'No options available.')}</p>`)
       : (fields || []).map((f) => `
           <div class="field">
             <label for="mf-${f.name}">${esc(f.label)}</label>
@@ -1626,7 +1626,7 @@
           const values = {};
           for (const f of fields || []) values[f.name] = $(`#mf-${f.name}`, dlg).value;
           for (const f of fields || []) {
-            if (f.required && !values[f.name].trim()) { showModalError(`${f.label} wajib diisi.`); return; }
+            if (f.required && !values[f.name].trim()) { showModalError(`${f.label} is required.`); return; }
           }
           const problem = validate?.(values);
           if (problem) { showModalError(problem); return; }
@@ -1666,7 +1666,7 @@
     if (!duration) {
       const close = document.createElement('button');
       close.type = 'button';
-      close.setAttribute('aria-label', 'Tutup notifikasi');
+      close.setAttribute('aria-label', 'Close notification');
       close.innerHTML = icon('x', 14);
       close.onclick = remove;
       el.appendChild(close);
@@ -1705,10 +1705,10 @@
     const btn = $('#theme-btn');
     if (!btn) return;
     const mode = currentTheme();
-    const label = { system: 'Sistem', light: 'Terang', dark: 'Gelap' }[mode];
+    const label = { system: 'System', light: 'Light', dark: 'Dark' }[mode];
     btn.innerHTML = icon(mode === 'system' ? 'auto' : mode === 'light' ? 'sun' : 'moon');
-    btn.title = `Tema: ${label}`;
-    btn.setAttribute('aria-label', `Tema: ${label}. Klik untuk mengganti.`);
+    btn.title = `Theme: ${label}`;
+    btn.setAttribute('aria-label', `Theme: ${label}. Click to toggle.`);
   }
 
   function cycleTheme() {
@@ -1728,16 +1728,16 @@
 <main class="login">
   <section class="login-card">
     <div class="brand-mark" aria-hidden="true"></div>
-    <h1>Password baru</h1>
-    <p class="sub">Buat password baru untuk catatan terkunci kamu.</p>
+    <h1>New Password</h1>
+    <p class="sub">Set a new password for your locked note.</p>
     ${note && token ? `
       <form id="reset-form">
-        <div class="field"><label for="reset-password">Password baru</label><input id="reset-password" type="password" autocomplete="new-password" placeholder="Minimal 8 karakter" minlength="8" required></div>
-        <div class="field"><label for="reset-confirm">Ulangi password</label><input id="reset-confirm" type="password" autocomplete="new-password" required></div>
-        <button class="btn primary" type="submit">Simpan password</button>
+        <div class="field"><label for="reset-password">New password</label><input id="reset-password" type="password" autocomplete="new-password" placeholder="At least 8 characters" minlength="8" required></div>
+        <div class="field"><label for="reset-confirm">Confirm password</label><input id="reset-confirm" type="password" autocomplete="new-password" required></div>
+        <button class="btn primary" type="submit">Save password</button>
       </form>
       <p class="login-note" id="reset-message" role="alert"></p>`
-      : '<p class="login-note error">Link reset tidak valid atau sudah kedaluwarsa.</p>'}
+      : '<p class="login-note error">Reset link is invalid or expired.</p>'}
   </section>
 </main>`;
     const form = $('#reset-form');
@@ -1746,8 +1746,8 @@
       e.preventDefault();
       const message = $('#reset-message');
       const password = $('#reset-password').value;
-      if (password.length < 8) { message.textContent = 'Password minimal 8 karakter.'; return; }
-      if (password !== $('#reset-confirm').value) { message.textContent = 'Password tidak sama.'; return; }
+      if (password.length < 8) { message.textContent = 'Password must be at least 8 characters.'; return; }
+      if (password !== $('#reset-confirm').value) { message.textContent = 'Passwords do not match.'; return; }
       try {
         await api(`/api/v1/notes/${encodeURIComponent(note)}/password/reset`, { method: 'POST', body: JSON.stringify({ token, password }) });
         location.hash = '#/notes';
@@ -1767,7 +1767,7 @@
     shellMounted = false;
     const diagnostic = {
       when: new Date().toISOString(),
-      error: `${err?.name || 'Error'}: ${err?.message || 'tidak diketahui'}`,
+      error: `${err?.name || 'Error'}: ${err?.message || 'unknown'}`,
       userAgent: navigator.userAgent,
       storage: typeof indexedDB === 'undefined' ? 'indexeddb-missing' : 'indexeddb-present',
       standalone: isStandalone(),
@@ -1776,11 +1776,11 @@
 <main class="login">
   <section class="login-card">
     <div class="state-icon">${icon('warn', 24)}</div>
-    <h1>Penyimpanan tidak bisa dibuka</h1>
-    <p class="sub">io-notes memakai IndexedDB untuk menyimpan catatan di perangkat ini. Catatan kamu <strong>tidak dihapus</strong> — aplikasi hanya belum bisa membacanya.</p>
-    <button class="btn primary block" id="storage-reload">Muat ulang</button>
-    <button class="btn block" id="storage-copy">Salin info diagnostik</button>
-    <p class="login-note">Kalau ini terjadi di mode penyamaran, izinkan penyimpanan situs lalu muat ulang.</p>
+    <h1>Storage Unavailable</h1>
+    <p class="sub">io-notes uses IndexedDB to store notes on this device. Your notes are <strong>not deleted</strong> — the app cannot access storage right now.</p>
+    <button class="btn primary block" id="storage-reload">Reload</button>
+    <button class="btn block" id="storage-copy">Copy diagnostic info</button>
+    <p class="login-note">If this occurs in private browsing, allow site storage and reload.</p>
   </section>
 </main>`;
     $('#storage-reload').onclick = () => location.reload();
@@ -1788,7 +1788,7 @@
       const text = JSON.stringify(diagnostic, null, 2);
       try {
         await navigator.clipboard.writeText(text);
-        $('#storage-copy').textContent = 'Tersalin';
+        $('#storage-copy').textContent = 'Copied';
       } catch {
         $('#storage-copy').textContent = text;
       }
@@ -1807,7 +1807,7 @@
       e.preventDefault();
       deferred = e;
       if (store.get('io-notes-install-dismissed')) return;
-      showInstallCard('Pasang io-notes', 'Buka lebih cepat dan tetap bisa menulis saat offline.', 'Pasang', async () => {
+      showInstallCard('Install io-notes', 'Launch faster and take notes offline.', 'Install', async () => {
         deferred.prompt();
         await deferred.userChoice;
         deferred = null;
@@ -1818,7 +1818,7 @@
 
     const ios = /iphone|ipad|ipod/i.test(navigator.userAgent);
     if (ios && !store.get('io-notes-install-dismissed')) {
-      setTimeout(() => showInstallCard('Tambahkan ke Layar Utama', 'Ketuk tombol Bagikan di Safari, lalu pilih “Tambah ke Layar Utama”.', null, null), 4000);
+      setTimeout(() => showInstallCard('Add to Home Screen', 'Tap the Share button in Safari, then select "Add to Home Screen".', null, null), 4000);
     }
   }
 
@@ -1829,7 +1829,7 @@
     card.className = 'install-card';
     card.innerHTML = `<p><strong>${esc(title)}</strong>${esc(body)}</p>
       <div class="row">
-        <button class="btn ghost" data-dismiss>Nanti saja</button>
+        <button class="btn ghost" data-dismiss>Later</button>
         ${actionLabel ? `<button class="btn primary" data-install>${esc(actionLabel)}</button>` : ''}
       </div>`;
     card.querySelector('[data-dismiss]').onclick = () => { store.set('io-notes-install-dismissed', '1'); card.remove(); };
@@ -1844,15 +1844,15 @@
       if (!reloading) return;
       location.reload();
     });
-    navigator.serviceWorker.register('/sw.js?v=22').then((reg) => {
+    navigator.serviceWorker.register('/sw.js?v=23').then((reg) => {
       reg.addEventListener('updatefound', () => {
         const worker = reg.installing;
         if (!worker) return;
         worker.addEventListener('statechange', () => {
           if (worker.state !== 'installed' || !navigator.serviceWorker.controller) return;
           // Never swap the app out from under an open editor (PRD 12.2).
-          toast('Versi baru io-notes tersedia', {
-            actionLabel: 'Muat ulang',
+          toast('A new version of io-notes is available', {
+            actionLabel: 'Reload',
             duration: 0,
             onAction: async () => { await flushSave(); reloading = true; worker.postMessage({ type: 'skip-waiting' }); },
           });
@@ -1870,7 +1870,7 @@
       const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName || '');
 
       if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'n' && state.user) { e.preventDefault(); newNote(); return; }
-      if (mod && e.key.toLowerCase() === 's' && state.user) { e.preventDefault(); void flushSave().then(() => toast('Tersimpan')); return; }
+      if (mod && e.key.toLowerCase() === 's' && state.user) { e.preventDefault(); void flushSave().then(() => toast('Saved')); return; }
       if (mod && e.key.toLowerCase() === 'k' && state.user) { e.preventDefault(); $('#q')?.focus(); $('#q')?.select(); return; }
       if (e.key === '/' && !typing && !modalOpen && state.user) { e.preventDefault(); $('#q')?.focus(); return; }
       if (e.key === 'Escape' && !modalOpen && !typing && state.route.noteId && window.innerWidth < 768) navigate(state.route.view, null);
