@@ -577,9 +577,11 @@
     
     const dName = $('#who-name');
     const dAvatar = $('#avatar');
+    const titleText = u.name && u.email ? `${u.name} (${u.email})` : u.name || u.email || '';
     if (dName) {
       dName.textContent = u.name || u.email || 'Account';
-      dName.title = u.email || '';
+      dName.title = titleText;
+      if (dName.parentElement) dName.parentElement.title = titleText;
     }
     const initials = (u.name || u.email || '?').trim().slice(0, 1).toUpperCase();
     if (dAvatar && dAvatar.dataset.for !== u.id) {
@@ -592,7 +594,8 @@
     const mAvatar = $('#avatar-mob');
     if (mName) {
       mName.textContent = u.name || u.email || 'Account';
-      mName.title = u.email || '';
+      mName.title = titleText;
+      if (mName.parentElement) mName.parentElement.title = titleText;
     }
     if (mAvatar && mAvatar.dataset.for !== u.id) {
       mAvatar.dataset.for = u.id;
@@ -1844,7 +1847,7 @@
       if (!reloading) return;
       location.reload();
     });
-    navigator.serviceWorker.register('/sw.js?v=23').then((reg) => {
+    navigator.serviceWorker.register('/sw.js?v=24').then((reg) => {
       reg.addEventListener('updatefound', () => {
         const worker = reg.installing;
         if (!worker) return;

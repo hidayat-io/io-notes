@@ -39,7 +39,7 @@
 
   /* Geometry */
   --r-1:8px; --r-2:10px; --r-3:14px; --r-4:18px;
-  --nav:220px;
+  --nav:240px;
   --list-w:320px;
   /* Reading measure in px, not ch: `ch` resolves against the wrapper's font-size,
      not the 15.5px body copy, which made the column read far too narrow. */
@@ -269,16 +269,17 @@ mark{background:color-mix(in srgb,var(--accent) 24%,transparent);color:inherit;b
 .drill-back:hover{background:var(--surface-2);color:var(--text)}
 
 /* ---------- sidebar footer ---------- */
-.side-foot{display:flex;align-items:center;gap:8px;padding:8px;border-top:1px solid var(--border)}
-.who{flex:1;min-width:0;display:flex;align-items:center;gap:9px;padding-left:4px}
+.side-foot{display:flex;align-items:center;gap:4px;padding:8px 6px;border-top:1px solid var(--border)}
+.side-foot .icon-btn{width:28px;height:28px;flex:none;border-radius:var(--r-1);padding:0}
+.who{flex:1;min-width:0;display:flex;align-items:center;gap:7px;padding-left:2px}
 .avatar{
   width:28px;height:28px;flex:none;border-radius:50%;display:grid;place-items:center;
   background:var(--accent-soft);color:var(--accent-text);
   font-size:11px;font-weight:700;text-transform:uppercase;
   background-size:cover;background-position:center;
 }
-.who-text{min-width:0;display:flex;flex-direction:column;gap:1px}
-.who-name{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.who-text{min-width:0;flex:1;display:flex;flex-direction:column;gap:1px}
+.who-name{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;line-height:1.3}
 .sync{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text-muted)}
 .sync::before{content:"";width:6px;height:6px;flex:none;border-radius:50%;background:var(--ok)}
 .sync[data-state="syncing"]::before{background:var(--accent);animation:pulse 1.1s ease-in-out infinite}
