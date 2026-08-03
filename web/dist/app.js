@@ -544,9 +544,10 @@
     const notes = visibleNotes();
     const q = state.query.trim();
     const showChip = !state.folderFilter && state.folders.length > 0;
+    const isDesktop = window.innerWidth >= 1024;
 
-    // Back affordance row
-    const backRow = `<button class="drill-back" role="listitem" data-act="drill-back" aria-label="Back to folders">
+    // Back affordance row (only for mobile/tablet drill-down)
+    const backRow = isDesktop ? '' : `<button class="drill-back" role="listitem" data-act="drill-back" aria-label="Back to folders">
       ${icon('left', 14)}<span>Folders</span>
     </button>`;
 
@@ -1851,7 +1852,7 @@
       if (!reloading) return;
       location.reload();
     });
-    navigator.serviceWorker.register('/sw.js?v=26').then((reg) => {
+    navigator.serviceWorker.register('/sw.js?v=27').then((reg) => {
       reg.addEventListener('updatefound', () => {
         const worker = reg.installing;
         if (!worker) return;

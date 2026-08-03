@@ -1,6 +1,8 @@
 /* io-notes — hand-written stylesheet, no build step.
    Token layer first, then layout, then components. Keep selectors flat. */
 
+[hidden]{display:none!important}
+
 :root{
   color-scheme:light dark;
 
@@ -506,7 +508,8 @@ dialog.modal::backdrop{background:rgba(12,14,19,.42);backdrop-filter:blur(2px)}
 }
 
 @media (min-width:1024px){
-  #mobile-side-head, #mobile-search, #mobile-foot { display: none; }
+  #mobile-side-head, #mobile-search, #mobile-foot, .drill-back { display: none !important; }
+  #list-head #btn-new-folder { display: none !important; }
   #btn-new-note-desktop { display: inline-grid !important; }
 }
 
