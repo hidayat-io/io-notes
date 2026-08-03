@@ -1,0 +1,9 @@
+PRAGMA foreign_keys = ON;
+CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, google_sub TEXT NOT NULL UNIQUE, email TEXT NOT NULL, email_verified INTEGER NOT NULL DEFAULT 1, name TEXT NOT NULL DEFAULT '', picture_url TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS user_sync_state (user_id TEXT PRIMARY KEY, last_revision INTEGER NOT NULL DEFAULT 0, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS folders (user_id TEXT NOT NULL, id TEXT NOT NULL, name TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(user_id,id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE TABLE IF NOT EXISTS notes (user_id TEXT NOT NULL, id TEXT NOT NULL, title TEXT NOT NULL DEFAULT '', content TEXT NOT NULL DEFAULT '', folder_id TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, deleted_at INTEGER, mutation_id TEXT NOT NULL, revision INTEGER NOT NULL, server_updated_at INTEGER NOT NULL, password_hash TEXT NOT NULL DEFAULT '', PRIMARY KEY(user_id,id), FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE, CHECK(created_at<=updated_at), CHECK(deleted_at IS NULL OR deleted_at=updated_at));
+CREATE INDEX IF NOT EXISTS idx_notes_user_revision ON notes(user_id,revision);
+CREATE INDEX IF NOT EXISTS idx_notes_user_active_updated ON notes(user_id,deleted_at,updated_at DESC);
+CREATE TABLE IF NOT EXISTS note_password_resets (id TEXT PRIMARY KEY, user_id TEXT NOT NULL, note_id TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL, used_at INTEGER, created_at INTEGER NOT NULL, FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE);
+CREATE INDEX IF NOT EXISTS idx_note_password_resets_token ON note_password_resets(token_hash,expires_at);

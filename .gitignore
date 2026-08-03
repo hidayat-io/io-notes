@@ -1,0 +1,21 @@
+# Build artifacts — build locally per deploy, do not commit
+/build/
+/litenotes
+/litenotes-arm64
+
+# Local config / env / secrets (never commit real keys)
+/.env
+*.env
+deploy/*.env.*
+!deploy/*.service
+
+# Agent/planner internal state (not part of the repo)
+/.omo/
+
+# Cloudflare tunnel config — exposes internal hostname/port topology
+deploy/papandayan-cloudflared.yml
+
+# Editor & temp
+.DS_Store
+*.swp
+*~

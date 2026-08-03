@@ -1,0 +1,24 @@
+{
+  "name": "io-notes",
+  "short_name": "io-notes",
+  "description": "Catatan ringan yang tetap bekerja saat offline.",
+  "start_url": "/#/notes",
+  "id": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f2f3f8",
+  "theme_color": "#f2f3f8",
+  "lang": "id-ID",
+  "dir": "ltr",
+  "categories": ["productivity", "utilities"],
+  "icons": [
+    { "src": "/icon-note-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-note-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-note-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Catatan baru", "short_name": "Baru", "url": "/#/notes" },
+    { "name": "Trash", "short_name": "Trash", "url": "/#/trash" }
+  ]
+}

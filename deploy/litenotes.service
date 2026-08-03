@@ -1,0 +1,25 @@
+[Unit]
+Description=io-notes offline-first notes server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/litenotes
+EnvironmentFile=/opt/litenotes/env/litenotes.env
+ExecStart=/opt/litenotes/bin/litenotes
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/opt/litenotes/data
+MemoryMax=256M
+LimitNOFILE=4096
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target
