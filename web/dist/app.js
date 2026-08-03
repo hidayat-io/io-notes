@@ -883,10 +883,16 @@
     if (q) { q.value = ''; }
     if (qMob) { qMob.value = ''; }
     document.querySelectorAll('.search-clear').forEach(el => el.hidden = true);
-    if (state.route.view !== 'notes') { navigate('notes', null); return; }
+    
+    const current = currentNote();
+    const matchesFolder = current && !current.deleted_at && (id ? current.folder_id === id : true);
+    const targetNoteId = matchesFolder ? current.id : null;
+
     listSig = '';
     paintListTitle();
     paintList();
+    navigate(state.route.view === 'trash' ? 'notes' : state.route.view, targetNoteId);
+    paintEditor();
   }
 
   function drillBack() {
@@ -914,7 +920,15 @@
     if (q) { q.value = ''; }
     if (qMob) { qMob.value = ''; }
     document.querySelectorAll('.search-clear').forEach(el => el.hidden = true);
-    navigate('trash', null);
+    
+    const current = currentNote();
+    const targetNoteId = (current && current.deleted_at) ? current.id : null;
+
+    listSig = '';
+    paintListTitle();
+    paintList();
+    navigate('trash', targetNoteId);
+    paintEditor();
   }
 
   async function createFolder() {
@@ -1852,7 +1866,7 @@
       if (!reloading) return;
       location.reload();
     });
-    navigator.serviceWorker.register('/sw.js?v=27').then((reg) => {
+    navigator.serviceWorker.register('/sw.js?v=28').then((reg) => {
       reg.addEventListener('updatefound', () => {
         const worker = reg.installing;
         if (!worker) return;

@@ -1,5 +1,5 @@
-const CACHE = 'io-notes-shell-v27';
-const ASSETS = ['/', '/index.html', '/app.css?v=27', '/app.js?v=27', '/manifest.webmanifest?v=27', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
+const CACHE = 'io-notes-shell-v28';
+const ASSETS = ['/', '/index.html', '/app.css?v=28', '/app.js?v=28', '/manifest.webmanifest?v=28', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
 const NAV_TIMEOUT = 3000;
 
 self.addEventListener('install', (e) => {
