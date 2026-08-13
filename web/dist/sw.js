@@ -1,4 +1,4 @@
-const CACHE = 'io-notes-shell-v64';
+const CACHE = 'io-notes-shell-v65';
 const ASSETS = ['/', '/index.html', '/app.css?v=62', '/app.js?v=62', '/manifest.webmanifest?v=62', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
 const ASSET_PATHS = new Set(['/app.css', '/app.js', '/manifest.webmanifest', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png', '/favicon.ico', '/icon.svg']);
 const NAV_TIMEOUT = 3000;

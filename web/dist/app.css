@@ -471,6 +471,8 @@ dialog.modal{
   border-radius:12px;background:var(--surface);color:var(--text);
   box-shadow:var(--shadow-2);
 }
+dialog.modal.modal-wide{width:min(100% - 32px,920px)}
+dialog.modal.modal-wide .attach-preview{max-height:72vh}
 dialog.modal::backdrop{background:rgba(0,0,0,.28);backdrop-filter:blur(8px)}
 .modal-body{padding:20px 20px 6px}
 .modal h2{margin:0 0 4px;font-family:var(--font-display);font-size:16px;font-weight:700;letter-spacing:-.02em}

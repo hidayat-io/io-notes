@@ -762,6 +762,7 @@
     if (act === 'fmt-check') return void insertListPrefix('🟡 ');
     if (act === 'fmt-bullet') return void insertListPrefix('• ');
     if (act === 'attach') return void attachPick();
+    if (act === 'attach-open') return void openAttachment(el.dataset.id);
     if (act === 'attachments') return void attachmentsManager();
     if (act === 'toggle-pin') return void togglePin();
     if (act === 'undo') return applyHistory(null, 'undo');
@@ -1078,8 +1079,6 @@
         if (render) { render.scrollTop = content.scrollTop; render.scrollLeft = content.scrollLeft; }
       });
       $('#content-render')?.addEventListener('click', (ev) => {
-        const att = ev.target.closest('.attach-slot');
-        if (att) return void openAttachment(att.dataset.attach);
         const slot = ev.target.closest('.mark-slot');
         if (!slot) return;
         const lineEl = slot.closest('.content-line');
@@ -1124,8 +1123,8 @@
   function attachCardHTML(name, id) {
     const meta = attachMeta(id);
     if (!state.online) return `<span class="attach-slot attach-offline" data-attach="${id}">${icon('cloud', 14)}<span class="attach-name">${esc(name)}</span></span>`;
-    if (!meta) return `<span class="attach-slot attach-missing" data-attach="${id}">${icon('trash', 14)}<span class="attach-name">${esc(name)}</span></span>`;
-    return `<span class="attach-slot attach-link" data-attach="${id}" title="${esc(meta.filename)} · ${humanSize(meta.size_bytes)}">${icon('paperclip', 14)}<span class="attach-name">${esc(name)}</span></span>`;
+    if (!meta) return `<span class="attach-slot attach-missing" data-act="attach-open" data-id="${id}">${icon('trash', 14)}<span class="attach-name">${esc(name)}</span></span>`;
+    return `<span class="attach-slot attach-link" data-act="attach-open" data-id="${id}" title="${esc(meta.filename)} · ${humanSize(meta.size_bytes)}">${icon('paperclip', 14)}<span class="attach-name">${esc(name)}</span></span>`;
   }
 
   function rerenderOverlay() {
@@ -1135,7 +1134,11 @@
 
   async function openAttachment(id) {
     const meta = attachMeta(id);
-    if (!meta) { toast('Attachment tidak tersedia'); return; }
+    if (!meta) {
+      const clean = await modal({ title: 'Attachment tidak tersedia', description: 'Lampiran sudah dihapus. Hapus referensi dari note?', confirmText: 'Hapus referensi', danger: true });
+      if (clean) { await removeAttachmentRefs(id); rerenderOverlay(); }
+      return;
+    }
     if (!state.online) { toast('Internet connection required for this action.'); return; }
     const preview = meta.kind === 'image'
       ? `<img class="attach-preview" src="${esc(attachFileURL(id, false))}" alt="${esc(meta.filename)}">`
@@ -1146,6 +1149,7 @@
       description: `${humanSize(meta.size_bytes)} · ${meta.content_type}`,
       choices: [{ value: 'download', label: 'Download', icon: 'download' }],
       cancelText: 'Close',
+      wide: true,
     });
     if (act === 'download') {
       const a = document.createElement('a');
@@ -1166,6 +1170,30 @@
     c.value = c.value.slice(0, s) + ref + c.value.slice(e);
     c.selectionStart = c.selectionEnd = s + ref.length;
     c.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // Deleting an attachment also removes its embed references so notes never show
+  // dangling raw markdown on any client.
+  async function removeAttachmentRefs(id) {
+    const lineRe = new RegExp(`^!\\[[^\\]]*\\]\\(attach:${id}\\)[ \\t]*$`);
+    const inlineRe = new RegExp(`!?\\[[^\\]]*\\]\\(attach:${id}\\)`, 'g');
+    let touchedOpen = false;
+    for (const n of state.notes) {
+      if (n.deleted_at || !n.content || !n.content.includes(id)) continue;
+      const next = n.content.split('\n').filter((l) => !lineRe.test(l)).join('\n').replace(inlineRe, '');
+      if (next === n.content) continue;
+      n.content = next;
+      n.updated_at = stamp(n.updated_at);
+      n.mutation_id = uid();
+      await saveLocal(n);
+      if (currentNote()?.id === n.id) touchedOpen = true;
+    }
+    if (touchedOpen) {
+      const c = $('#content');
+      if (c) { c.value = currentNote().content; renderContentOverlay(c.value); }
+    }
+    paintList();
+    scheduleSync();
   }
 
   async function attachPick() {
@@ -1229,11 +1257,12 @@
     });
     if (act === 'download') return void openAttachment(pick);
     if (act === 'delete') {
-      const sure = await modal({ title: 'Delete attachment?', description: 'Embed di note akan tampil sebagai "tidak tersedia".', confirmText: 'Delete', danger: true });
+      const sure = await modal({ title: 'Delete attachment?', description: 'Referensi di note ikut dihapus.', confirmText: 'Delete', danger: true });
       if (!sure) return;
       try {
         await api('/api/v1/attachments/' + pick, { method: 'DELETE' });
         state.attachments = state.attachments.filter((a) => a.id !== pick);
+        await removeAttachmentRefs(pick);
         rerenderOverlay();
         toast('Attachment dihapus');
       } catch (e) {
@@ -2439,9 +2468,10 @@
 
   /* --------------------------------------------------------------- modals */
 
-  function modal({ title, description, previewHTML, fields, choices, confirmText = 'Save', cancelText = 'Cancel', danger = false, validate, emptyText }) {
+  function modal({ title, description, previewHTML, fields, choices, confirmText = 'Save', cancelText = 'Cancel', danger = false, validate, emptyText, wide = false }) {
     const dlg = $('#modal');
     if (!dlg) return Promise.resolve(null);
+    dlg.classList.toggle('modal-wide', wide);
 
     const isChoice = Array.isArray(choices);
     const body = isChoice
@@ -2485,6 +2515,7 @@
         scope.abort();
         dlg.close();
         dlg.innerHTML = '';
+        dlg.classList.remove('modal-wide');
         resolve(value);
       };
 
@@ -2718,7 +2749,7 @@
       if (!reloading) return;
       location.reload();
     });
-    navigator.serviceWorker.register('/sw.js?v=64').then((reg) => {
+    navigator.serviceWorker.register('/sw.js?v=65').then((reg) => {
       reg.addEventListener('updatefound', () => {
         const worker = reg.installing;
         if (!worker) return;
