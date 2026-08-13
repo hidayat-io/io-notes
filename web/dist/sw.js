@@ -1,5 +1,6 @@
-const CACHE = 'io-notes-shell-v28';
-const ASSETS = ['/', '/index.html', '/app.css?v=28', '/app.js?v=28', '/manifest.webmanifest?v=28', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
+const CACHE = 'io-notes-shell-v63';
+const ASSETS = ['/', '/index.html', '/app.css?v=62', '/app.js?v=62', '/manifest.webmanifest?v=62', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
+const ASSET_PATHS = new Set(['/app.css', '/app.js', '/manifest.webmanifest', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png', '/favicon.ico', '/icon.svg']);
 const NAV_TIMEOUT = 3000;
 
 self.addEventListener('install', (e) => {
@@ -49,13 +50,11 @@ self.addEventListener('fetch', (e) => {
     return;
   }
 
-  e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request).then((r) => {
-    if (r.ok) {
-      const copy = r.clone();
-      caches.open(CACHE).then((c) => c.put(e.request, copy));
-    }
-    return r;
-  })));
+  // Cache only the immutable application shell. Runtime-caching every same-origin
+  // GET made cache storage grow forever as URLs and assets changed.
+  if (ASSET_PATHS.has(u.pathname)) {
+    e.respondWith(caches.match(e.request).then((hit) => hit || fetch(e.request)));
+  }
 });
 
 self.addEventListener('sync', (e) => {

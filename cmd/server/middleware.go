@@ -213,7 +213,7 @@ var inlineScript = regexp.MustCompile(`(?s)<script>(.*?)</script>`)
 // cspFor derives the script hashes from the shipped index.html, so the theme
 // bootstrap keeps working under a strict CSP without anyone maintaining a hash
 // by hand — edit the HTML and the policy follows.
-func cspFor(indexHTML []byte) string {
+func cspFor(indexHTML []byte, cfg config) string {
 	var hashes []string
 	for _, m := range inlineScript.FindAllSubmatch(indexHTML, -1) {
 		sum := sha256.Sum256(m[1])
@@ -222,6 +222,10 @@ func cspFor(indexHTML []byte) string {
 	scriptSrc := "'self' https://accounts.google.com/gsi/client"
 	if len(hashes) > 0 {
 		scriptSrc += " " + strings.Join(hashes, " ")
+	}
+	connectSrc := "'self' https://accounts.google.com/gsi/"
+	if cfg.R2AccountID != "" {
+		connectSrc += " https://" + cfg.R2AccountID + ".r2.cloudflarestorage.com"
 	}
 	return strings.Join([]string{
 		"default-src 'self'",
@@ -237,7 +241,7 @@ func cspFor(indexHTML []byte) string {
 		// injection cannot execute code, and nothing here renders untrusted HTML.
 		"style-src 'self' https://accounts.google.com/gsi/style 'unsafe-inline'",
 		"img-src 'self' data: https:",
-		"connect-src 'self' https://accounts.google.com/gsi/",
+		"connect-src " + connectSrc,
 		"frame-src https://accounts.google.com/gsi/",
 		"manifest-src 'self'",
 		"worker-src 'self'",

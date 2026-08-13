@@ -120,3 +120,61 @@ The CSP is derived at startup from the hash of the inline bootstrap script in
 `index.html`, so editing that script does not require touching the policy — but it
 does require redeploying the binary, since the hash is computed from the embedded
 copy.
+
+## R2 attachments
+
+File/image uploads store bytes in Cloudflare R2 (private bucket). The server never
+proxies bytes: browsers PUT directly to short-lived presigned URLs, and quota is
+enforced server-side by reserving bytes in a `pending` row before the presign is
+issued. Unconfirmed uploads and soft-deleted attachments are swept (row deleted in
+the DB transaction, object deleted after commit) after 60 minutes; a failed object
+delete is logged as `attachment_orphan` and can be cleaned manually with
+`wrangler r2 object delete <bucket> <key>`.
+
+One-time setup:
+
+```bash
+wrangler r2 bucket create litenotes-attachments   # private by default; never enable public access
+# create an R2 API token with Object Read & Write for this bucket
+```
+
+Then set in `/opt/litenotes/env/litenotes.env` (mode 0600):
+
+```
+R2_ACCOUNT_ID=<account-id>
+R2_ACCESS_KEY_ID=<token-key-id>
+R2_SECRET_ACCESS_KEY=<token-secret>
+R2_BUCKET=litenotes-attachments
+ATTACH_MAX_BYTES=10485760          # per file (10 MB)
+ATTACH_USER_QUOTA_BYTES=536870912  # per user (512 MB)
+ATTACH_GLOBAL_CAP_BYTES=8589934592 # all users (8 GB; keeps the account under R2's 10 GB free tier)
+```
+
+All four `R2_*` vars must be set together; with none set the feature is fully off
+(endpoints return 503 `ATTACHMENTS_NOT_CONFIGURED`). Quotas are env-tunable — verify
+current R2 free-tier numbers on deploy day and adjust without code changes.
+
+CORS: the bucket must allow `PUT`/`GET`/`HEAD` from `APP_ORIGIN`. Bootstrap it once by
+deploying with `R2_BOOTSTRAP_CORS=1` (log line `r2_cors_bootstrapped`), then remove the
+var. Manual alternative:
+
+```bash
+aws s3api put-bucket-cors --endpoint-url https://<account-id>.r2.cloudflarestorage.com \
+  --bucket litenotes-attachments --cors-configuration file://cors.json
+```
+
+with `cors.json` allowing origins `["https://note.indoomega.my.id"]`, methods
+`["PUT","GET","HEAD"]`, headers `["*"]`, expose `["ETag"]`, max age 3600.
+
+Add to release verification (with a session cookie in `$C`):
+
+```bash
+curl -s https://note.indoomega.my.id/config.js | grep -o 'attachmentsEnabled[^,]*'
+curl -s -b "$C" -H 'Content-Type: application/json' https://note.indoomega.my.id/api/v1/attachments \
+  -d '{"filename":"t.txt","content_type":"text/plain","size_bytes":5}'
+curl -s -X PUT -H 'Content-Type: text/plain' --data-binary 'hello' "<upload_url from previous response>"
+curl -s -b "$C" -X POST https://note.indoomega.my.id/api/v1/attachments/<id>/confirm -d '{}'
+```
+
+Rollback is safe: the schema change is additive (new `attachments` table) and old
+binaries ignore it; removing the `R2_*` env vars turns the feature off.

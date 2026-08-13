@@ -28,10 +28,11 @@ import (
 	"syscall"
 	"time"
 
+	webassets "litenotes/web"
+
 	_ "github.com/tursodatabase/libsql-client-go/libsql"
 	"golang.org/x/crypto/bcrypt"
 	"google.golang.org/api/idtoken"
-	webassets "litenotes/web"
 	_ "modernc.org/sqlite"
 )
 
@@ -43,6 +44,9 @@ type config struct {
 	ListenHost, ClientIPHeader                                                                       string
 	SessionTTL                                                                                       time.Duration
 	BrevoAPIKey, ResetEmailFrom, ResetEmailFromName, ResetSMTPAddr, ResetSMTPUser, ResetSMTPPassword string
+	R2AccountID, R2AccessKeyID, R2SecretAccessKey, R2Bucket, AttachLocalDir                          string
+	AttachMaxBytes, AttachUserQuotaBytes, AttachGlobalCapBytes                                       int64
+	BootstrapR2CORS                                                                                  bool
 }
 
 type user struct {
@@ -62,6 +66,7 @@ type note struct {
 	Revision        int64  `json:"revision"`
 	ServerUpdatedAt int64  `json:"server_updated_at"`
 	FolderID        string `json:"folder_id"`
+	IsPinned        bool   `json:"is_pinned"`
 	IsLocked        bool   `json:"is_locked"`
 	PasswordHash    string `json:"-"`
 }
@@ -77,6 +82,7 @@ type noteInput struct {
 	UpdatedAt int64  `json:"updated_at"`
 	DeletedAt *int64 `json:"deleted_at"`
 	FolderID  string `json:"folder_id"`
+	IsPinned  bool   `json:"is_pinned"`
 }
 type folder struct {
 	ID        string `json:"id"`
@@ -103,7 +109,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	app := newApplication(cfg, db, logger)
+	var store objectStore
+	switch {
+	case cfg.R2AccountID != "":
+		r2 := newR2Store(cfg)
+		if cfg.BootstrapR2CORS {
+			if err := r2.bootstrapCORS(context.Background(), cfg.AppOrigin); err != nil {
+				logger.Error("r2_cors_bootstrap_failed", "error", err)
+			} else {
+				logger.Info("r2_cors_bootstrapped", "origin", cfg.AppOrigin)
+			}
+		}
+		store = r2
+	case cfg.AttachLocalDir != "":
+		if err := os.MkdirAll(cfg.AttachLocalDir, 0750); err != nil {
+			logger.Error("attach_local_dir_failed", "error", err)
+			os.Exit(1)
+		}
+		store = &localStore{dir: cfg.AttachLocalDir}
+	}
+
+	app := newApplication(cfg, db, logger, store)
+	if err := app.sweepAttachments(context.Background()); err != nil {
+		logger.Warn("attachment_sweep_failed", "error", err)
+	}
 	listenHost := cfg.ListenHost
 	server := &http.Server{Addr: listenHost + ":" + cfg.Port, Handler: app.routes(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -150,7 +179,57 @@ func loadConfig() (config, error) {
 	// the port on every interface would let clients bypass the tunnel and its TLS.
 	c.ListenHost = getenv("LISTEN_HOST", "127.0.0.1")
 	c.ClientIPHeader = os.Getenv("CLIENT_IP_HEADER")
+	c.R2AccountID, c.R2AccessKeyID, c.R2SecretAccessKey, c.R2Bucket = os.Getenv("R2_ACCOUNT_ID"), os.Getenv("R2_ACCESS_KEY_ID"), os.Getenv("R2_SECRET_ACCESS_KEY"), os.Getenv("R2_BUCKET")
+	c.AttachLocalDir = os.Getenv("ATTACH_LOCAL_DIR")
+	c.BootstrapR2CORS = os.Getenv("R2_BOOTSTRAP_CORS") == "1"
+	var err error
+	if c.AttachMaxBytes, err = getenvInt64("ATTACH_MAX_BYTES", 10<<20); err != nil {
+		return c, err
+	}
+	if c.AttachUserQuotaBytes, err = getenvInt64("ATTACH_USER_QUOTA_BYTES", 512<<20); err != nil {
+		return c, err
+	}
+	if c.AttachGlobalCapBytes, err = getenvInt64("ATTACH_GLOBAL_CAP_BYTES", 8<<30); err != nil {
+		return c, err
+	}
+	if err := validateAttachConfig(c); err != nil {
+		return c, err
+	}
 	return c, nil
+}
+
+func getenvInt64(k string, fallback int64) (int64, error) {
+	raw := os.Getenv(k)
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v <= 0 {
+		return 0, fmt.Errorf("%s must be a positive integer", k)
+	}
+	return v, nil
+}
+
+// validateAttachConfig keeps the R2 credential set all-or-nothing so a partially
+// configured deploy fails at boot instead of returning 503s on first upload, and
+// keeps the dev-only local store out of non-dev environments.
+func validateAttachConfig(c config) error {
+	r2Set := 0
+	for _, v := range []string{c.R2AccountID, c.R2AccessKeyID, c.R2SecretAccessKey, c.R2Bucket} {
+		if v != "" {
+			r2Set++
+		}
+	}
+	if r2Set != 0 && r2Set != 4 {
+		return errors.New("R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY and R2_BUCKET must all be set together")
+	}
+	if c.AttachLocalDir != "" && c.AuthMode != "dev" {
+		return errors.New("ATTACH_LOCAL_DIR is only allowed with AUTH_MODE=dev")
+	}
+	if c.AttachMaxBytes > c.AttachUserQuotaBytes {
+		return errors.New("ATTACH_MAX_BYTES must not exceed ATTACH_USER_QUOTA_BYTES")
+	}
+	return nil
 }
 
 // validateDatabaseConfig enforces remote Turso in production so a dead VPS does not
@@ -172,7 +251,7 @@ func isRemoteDatabaseURL(raw string) bool {
 }
 
 // schemaVersion tracks cmd/server/schema.sql; bump it whenever the schema changes.
-const schemaVersion = 1
+const schemaVersion = 2
 
 func readEmbeddedIndex() ([]byte, error) { return webassets.Dist.ReadFile("dist/index.html") }
 
@@ -256,6 +335,8 @@ func pingDB(db *sql.DB, timeout time.Duration) error {
 	return db.PingContext(ctx)
 }
 
+const auditRetention = 30 * 24 * time.Hour
+
 func migrate(db *sql.DB) error {
 	b, err := schema.ReadFile("schema.sql")
 	if err != nil {
@@ -270,12 +351,14 @@ func migrate(db *sql.DB) error {
 	for _, alter := range []string{
 		"ALTER TABLE notes ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE notes ADD COLUMN folder_id TEXT NOT NULL DEFAULT ''",
+		"ALTER TABLE notes ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0",
 	} {
 		if err := execIgnoreDuplicateColumn(db, alter); err != nil {
 			return err
 		}
 	}
-	return nil
+	_, err = db.Exec("DELETE FROM note_audit WHERE created_at < ?", time.Now().Add(-auditRetention).UnixMilli())
+	return err
 }
 
 func execIgnoreDuplicateColumn(db *sql.DB, sqlText string) error {
@@ -319,28 +402,36 @@ func splitSQLStatements(src string) []string {
 }
 
 type application struct {
-	cfg    config
-	db     *sql.DB
-	logger *slog.Logger
-	csp    string
+	cfg           config
+	db            *sql.DB
+	logger        *slog.Logger
+	csp           string
+	store         objectStore
+	attachEnabled bool
 
-	loginLimit *limiter
-	pushLimit  *limiter
-	pullLimit  *limiter
+	loginLimit    *limiter
+	pushLimit     *limiter
+	pullLimit     *limiter
+	uploadLimit   *limiter
+	downloadLimit *limiter
 }
 
 // newApplication wires the derived state (CSP hashes, rate limiters) that both
 // main and the tests need, so neither can drift from the other.
-func newApplication(cfg config, db *sql.DB, logger *slog.Logger) *application {
+func newApplication(cfg config, db *sql.DB, logger *slog.Logger, store objectStore) *application {
 	indexHTML, _ := readEmbeddedIndex()
 	return &application{
-		cfg:        cfg,
-		db:         db,
-		logger:     logger,
-		csp:        cspFor(indexHTML),
-		loginLimit: newLimiter(10, 20), // PRD 14.3
-		pushLimit:  newLimiter(30, 60), // burst covers a reconnect flush
-		pullLimit:  newLimiter(120, 180),
+		cfg:           cfg,
+		db:            db,
+		logger:        logger,
+		csp:           cspFor(indexHTML, cfg),
+		store:         store,
+		attachEnabled: store != nil,
+		loginLimit:    newLimiter(10, 20), // PRD 14.3
+		pushLimit:     newLimiter(30, 60), // burst covers a reconnect flush
+		pullLimit:     newLimiter(120, 180),
+		uploadLimit:   newLimiter(10, 20),
+		downloadLimit: newLimiter(60, 90),
 	}
 }
 
@@ -362,11 +453,20 @@ func (a *application) routes() http.Handler {
 	mux.HandleFunc("DELETE /api/v1/folders/{id}", a.withAuth(a.deleteFolder))
 	mux.HandleFunc("POST /api/v1/sync/push", a.withAuth(a.byUser(a.pushLimit, a.push)))
 	mux.HandleFunc("GET /api/v1/sync/pull", a.withAuth(a.byUser(a.pullLimit, a.pull)))
+	mux.HandleFunc("GET /api/v1/notes/{id}/history", a.withAuth(a.noteHistory))
 	mux.HandleFunc("PUT /api/v1/notes/{id}/password", a.withAuth(a.setNotePassword))
 	mux.HandleFunc("DELETE /api/v1/notes/{id}/password", a.withAuth(a.removeNotePassword))
 	mux.HandleFunc("POST /api/v1/notes/{id}/unlock", a.withAuth(a.unlockNote))
 	mux.HandleFunc("POST /api/v1/notes/{id}/password/reset-request", a.withAuth(a.requestPasswordReset))
 	mux.HandleFunc("POST /api/v1/notes/{id}/password/reset", a.byIP(a.resetNotePassword))
+	mux.HandleFunc("POST /api/v1/attachments", a.withAuth(a.byUser(a.uploadLimit, a.createAttachment)))
+	mux.HandleFunc("POST /api/v1/attachments/{id}/confirm", a.withAuth(a.byUser(a.uploadLimit, a.confirmAttachment)))
+	mux.HandleFunc("GET /api/v1/attachments", a.withAuth(a.byUser(a.downloadLimit, a.listAttachments)))
+	mux.HandleFunc("GET /api/v1/attachments/{id}/download", a.withAuth(a.byUser(a.downloadLimit, a.downloadAttachment)))
+	mux.HandleFunc("DELETE /api/v1/attachments/{id}", a.withAuth(a.byUser(a.uploadLimit, a.deleteAttachment)))
+	if _, isLocal := a.store.(*localStore); isLocal {
+		mux.HandleFunc("/api/v1/devblob/{key...}", a.withAuth(a.devBlob))
+	}
 	return a.security(a.accessLog(a.staticFallback(mux)))
 }
 
@@ -442,7 +542,13 @@ func (a *application) configJS(w http.ResponseWriter, r *http.Request) {
 	if authMode == "dev" && !isLocalHost(r.Host) {
 		authMode = "google"
 	}
-	fmt.Fprintf(w, "window.__LITENOTES_CONFIG__=%s;", mustJSON(map[string]string{"authMode": authMode, "googleClientId": a.cfg.GoogleClientID}))
+	fmt.Fprintf(w, "window.__LITENOTES_CONFIG__=%s;", mustJSON(map[string]string{
+		"authMode":             authMode,
+		"googleClientId":       a.cfg.GoogleClientID,
+		"attachmentsEnabled":   strconv.FormatBool(a.attachEnabled),
+		"attachMaxBytes":       strconv.FormatInt(a.cfg.AttachMaxBytes, 10),
+		"attachUserQuotaBytes": strconv.FormatInt(a.cfg.AttachUserQuotaBytes, 10),
+	}))
 }
 func (a *application) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -781,6 +887,15 @@ func (a *application) push(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback()
+	if _, err = tx.ExecContext(r.Context(), "DELETE FROM note_audit WHERE created_at < ?", time.Now().Add(-auditRetention).UnixMilli()); err != nil {
+		jsonError(w, 500, "INTERNAL_ERROR", "gagal membersihkan audit log")
+		return
+	}
+	sweptKeys, err := sweepAttachmentsInTx(r.Context(), tx)
+	if err != nil {
+		jsonError(w, 500, "INTERNAL_ERROR", "gagal membersihkan lampiran")
+		return
+	}
 	results := make([]any, 0, len(in.Mutations))
 	serverNow := time.Now().UnixMilli()
 	for _, m := range in.Mutations {
@@ -799,11 +914,11 @@ func (a *application) push(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, 500, "INTERNAL_ERROR", "gagal membaca note")
 			return
 		}
-		candidate := note{ID: m.Note.ID, Title: m.Note.Title, Content: m.Note.Content, FolderID: m.Note.FolderID, CreatedAt: m.Note.CreatedAt, UpdatedAt: m.Note.UpdatedAt, DeletedAt: m.Note.DeletedAt, MutationID: m.MutationID}
+		candidate := note{ID: m.Note.ID, Title: m.Note.Title, Content: m.Note.Content, FolderID: m.Note.FolderID, IsPinned: m.Note.IsPinned, CreatedAt: m.Note.CreatedAt, UpdatedAt: m.Note.UpdatedAt, DeletedAt: m.Note.DeletedAt, MutationID: m.MutationID}
 		status := "applied"
 		if found && compare(candidate, current) <= 0 {
 			status = "superseded"
-			if candidate.UpdatedAt == current.UpdatedAt && candidate.MutationID == current.MutationID && candidate.Title == current.Title && candidate.Content == current.Content && candidate.FolderID == current.FolderID && sameDeleted(candidate.DeletedAt, current.DeletedAt) {
+			if candidate.UpdatedAt == current.UpdatedAt && candidate.MutationID == current.MutationID && candidate.Title == current.Title && candidate.Content == current.Content && candidate.FolderID == current.FolderID && candidate.IsPinned == current.IsPinned && sameDeleted(candidate.DeletedAt, current.DeletedAt) {
 				status = "unchanged"
 			}
 			results = append(results, map[string]any{"mutation_id": m.MutationID, "status": status, "note": current})
@@ -824,7 +939,14 @@ func (a *application) push(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		now := time.Now().UnixMilli()
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO notes(user_id,id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,id) DO UPDATE SET title=excluded.title,content=excluded.content,folder_id=excluded.folder_id,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,mutation_id=excluded.mutation_id,revision=excluded.revision,server_updated_at=excluded.server_updated_at,password_hash=excluded.password_hash`, u.ID, candidate.ID, candidate.Title, candidate.Content, candidate.FolderID, candidate.CreatedAt, candidate.UpdatedAt, candidate.DeletedAt, candidate.MutationID, rev, now, candidate.PasswordHash)
+		if found && (current.Title != candidate.Title || current.Content != candidate.Content || current.FolderID != candidate.FolderID || current.IsPinned != candidate.IsPinned || !sameDeleted(current.DeletedAt, candidate.DeletedAt)) {
+			_, err = tx.ExecContext(r.Context(), "INSERT INTO note_audit(user_id,note_id,title,content,folder_id,deleted_at,mutation_id,created_at) VALUES(?,?,?,?,?,?,?,?)", u.ID, current.ID, current.Title, current.Content, current.FolderID, current.DeletedAt, current.MutationID, now)
+			if err != nil {
+				jsonError(w, 500, "INTERNAL_ERROR", "gagal mencatat audit note")
+				return
+			}
+		}
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO notes(user_id,id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash,is_pinned) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,id) DO UPDATE SET title=excluded.title,content=excluded.content,folder_id=excluded.folder_id,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,mutation_id=excluded.mutation_id,revision=excluded.revision,server_updated_at=excluded.server_updated_at,password_hash=excluded.password_hash,is_pinned=excluded.is_pinned`, u.ID, candidate.ID, candidate.Title, candidate.Content, candidate.FolderID, candidate.CreatedAt, candidate.UpdatedAt, candidate.DeletedAt, candidate.MutationID, rev, now, candidate.PasswordHash, candidate.IsPinned)
 		if err != nil {
 			jsonError(w, 500, "INTERNAL_ERROR", "gagal menyimpan note")
 			return
@@ -836,8 +958,53 @@ func (a *application) push(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 503, "DATABASE_UNAVAILABLE", "database tidak tersedia")
 		return
 	}
+	if a.store != nil {
+		for _, k := range sweptKeys {
+			if err := a.store.Delete(r.Context(), k); err != nil {
+				a.logger.Warn("attachment_orphan", "key", k, "error", err)
+			}
+		}
+	}
 	recordCount(w, "mutation_count", len(in.Mutations))
 	jsonOK(w, map[string]any{"results": results, "server_time": time.Now().UnixMilli()})
+}
+
+func (a *application) noteHistory(w http.ResponseWriter, r *http.Request) {
+	u := r.Context().Value(userKey{}).(user)
+	id := r.PathValue("id")
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	rows, err := a.db.QueryContext(r.Context(), `SELECT id,title,content,folder_id,deleted_at,mutation_id,created_at FROM note_audit WHERE user_id=? AND note_id=? AND created_at>=? ORDER BY created_at DESC LIMIT ?`, u.ID, id, time.Now().Add(-auditRetention).UnixMilli(), limit)
+	if err != nil {
+		jsonError(w, 503, "DATABASE_UNAVAILABLE", "database tidak tersedia")
+		return
+	}
+	defer rows.Close()
+	type auditEntry struct {
+		ID         int64  `json:"id"`
+		Title      string `json:"title"`
+		Content    string `json:"content"`
+		FolderID   string `json:"folder_id"`
+		DeletedAt  *int64 `json:"deleted_at"`
+		MutationID string `json:"mutation_id"`
+		CreatedAt  int64  `json:"created_at"`
+	}
+	entries := make([]auditEntry, 0)
+	for rows.Next() {
+		var entry auditEntry
+		if err := rows.Scan(&entry.ID, &entry.Title, &entry.Content, &entry.FolderID, &entry.DeletedAt, &entry.MutationID, &entry.CreatedAt); err != nil {
+			jsonError(w, 500, "INTERNAL_ERROR", "gagal membaca audit log")
+			return
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		jsonError(w, 500, "INTERNAL_ERROR", "gagal membaca audit log")
+		return
+	}
+	jsonOK(w, map[string]any{"note_id": id, "retention_days": 30, "entries": entries})
 }
 
 func (a *application) pull(w http.ResponseWriter, r *http.Request) {
@@ -853,7 +1020,7 @@ func (a *application) pull(w http.ResponseWriter, r *http.Request) {
 	if limit > 500 {
 		limit = 500
 	}
-	rows, err := a.db.QueryContext(r.Context(), "SELECT id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash FROM notes WHERE user_id=? AND revision>? ORDER BY revision ASC LIMIT ?", u.ID, cursor, limit+1)
+	rows, err := a.db.QueryContext(r.Context(), "SELECT id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash,is_pinned FROM notes WHERE user_id=? AND revision>? ORDER BY revision ASC LIMIT ?", u.ID, cursor, limit+1)
 	if err != nil {
 		jsonError(w, 503, "DATABASE_UNAVAILABLE", "database tidak tersedia")
 		return
@@ -1186,7 +1353,7 @@ type rowScanner interface{ Scan(...any) error }
 func scanNote(s rowScanner) (note, error) {
 	var n note
 	var d sql.NullInt64
-	err := s.Scan(&n.ID, &n.Title, &n.Content, &n.FolderID, &n.CreatedAt, &n.UpdatedAt, &d, &n.MutationID, &n.Revision, &n.ServerUpdatedAt, &n.PasswordHash)
+	err := s.Scan(&n.ID, &n.Title, &n.Content, &n.FolderID, &n.CreatedAt, &n.UpdatedAt, &d, &n.MutationID, &n.Revision, &n.ServerUpdatedAt, &n.PasswordHash, &n.IsPinned)
 	n.IsLocked = n.PasswordHash != ""
 	if d.Valid {
 		n.DeletedAt = &d.Int64
@@ -1198,7 +1365,7 @@ func getNote(ctx context.Context, q interface {
 }, userID, id string) (note, bool, error) {
 	var n note
 	var d sql.NullInt64
-	err := q.QueryRowContext(ctx, "SELECT id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash FROM notes WHERE user_id=? AND id=?", userID, id).Scan(&n.ID, &n.Title, &n.Content, &n.FolderID, &n.CreatedAt, &n.UpdatedAt, &d, &n.MutationID, &n.Revision, &n.ServerUpdatedAt, &n.PasswordHash)
+	err := q.QueryRowContext(ctx, "SELECT id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash,is_pinned FROM notes WHERE user_id=? AND id=?", userID, id).Scan(&n.ID, &n.Title, &n.Content, &n.FolderID, &n.CreatedAt, &n.UpdatedAt, &d, &n.MutationID, &n.Revision, &n.ServerUpdatedAt, &n.PasswordHash, &n.IsPinned)
 	if errors.Is(err, sql.ErrNoRows) {
 		return note{}, false, nil
 	}

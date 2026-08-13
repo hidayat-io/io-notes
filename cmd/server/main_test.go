@@ -31,7 +31,7 @@ func newTestApp(t *testing.T) *application {
 	if err := migrate(db); err != nil {
 		t.Fatalf("migrate on empty database: %v", err)
 	}
-	return newApplication(cfg, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newApplication(cfg, db, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
 }
 
 func TestValidateDatabaseConfig(t *testing.T) {
@@ -434,7 +434,7 @@ func TestCSPCoversInlineScripts(t *testing.T) {
 	if !strings.Contains(string(indexHTML), "<script>") {
 		t.Skip("no inline script in index.html")
 	}
-	if !strings.Contains(cspFor(indexHTML), "'sha256-") {
+	if !strings.Contains(cspFor(indexHTML, config{}), "'sha256-") {
 		t.Fatal("CSP has no hash for the inline bootstrap script")
 	}
 }
@@ -517,6 +517,28 @@ func TestPushRevisionAccounting(t *testing.T) {
 	}
 	if got := revisionOf(t, newer); got != rev1+1 {
 		t.Fatalf("revision = %d, want %d", got, rev1+1)
+	}
+}
+
+func TestPushWritesPreviousNoteToAuditHistory(t *testing.T) {
+	a := newTestApp(t)
+	u := a.mustUser(t, "sub-audit", "audit@example.com")
+	id := testUUID(9)
+	pushOne(t, a, u, id, 2000, "before", nil)
+	m := mutation{MutationID: testUUID(10), Note: noteInput{ID: id, Title: "after", Content: "new content", CreatedAt: 1000, UpdatedAt: 3000}}
+	if w := a.do(t, u, "POST", "/api/v1/sync/push", map[string]any{"device_id": "dev", "mutations": []mutation{m}}); w.Code != 200 {
+		t.Fatalf("second push: %d %s", w.Code, w.Body.String())
+	}
+	var title, content string
+	if err := a.db.QueryRow("SELECT title,content FROM note_audit WHERE user_id=? AND note_id=? ORDER BY id DESC LIMIT 1", u.ID, id).Scan(&title, &content); err != nil {
+		t.Fatalf("audit row: %v", err)
+	}
+	if title != "before" || content != "body" {
+		t.Fatalf("audit snapshot = %q/%q, want before/body", title, content)
+	}
+	w := a.do(t, u, "GET", "/api/v1/notes/"+id+"/history", nil)
+	if w.Code != 200 || !strings.Contains(w.Body.String(), "before") || !strings.Contains(w.Body.String(), "body") {
+		t.Fatalf("history response = %d %s", w.Code, w.Body.String())
 	}
 }
 
