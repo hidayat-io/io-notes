@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -33,7 +32,7 @@ const (
 // fake and dev mode can substitute a local directory for R2.
 type objectStore interface {
 	PresignPut(ctx context.Context, key, contentType string, size int64, ttl time.Duration) (string, error)
-	PresignGet(ctx context.Context, key, filename string, download bool, ttl time.Duration) (string, error)
+	Get(ctx context.Context, key string) (io.ReadCloser, error)
 	Head(ctx context.Context, key string) (int64, error)
 	Delete(ctx context.Context, key string) error
 }
@@ -68,17 +67,12 @@ func (s *r2Store) PresignPut(ctx context.Context, key, contentType string, size 
 	return out.URL, nil
 }
 
-func (s *r2Store) PresignGet(ctx context.Context, key, filename string, download bool, ttl time.Duration) (string, error) {
-	in := &s3.GetObjectInput{Bucket: &s.bucket, Key: &key}
-	if download {
-		disp := `attachment; filename="` + sanitizeHeaderFilename(filename) + `"`
-		in.ResponseContentDisposition = &disp
-	}
-	out, err := s.presigner.PresignGetObject(ctx, in, s3.WithPresignExpires(ttl))
+func (s *r2Store) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{Bucket: &s.bucket, Key: &key})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return out.URL, nil
+	return out.Body, nil
 }
 
 func (s *r2Store) Head(ctx context.Context, key string) (int64, error) {
@@ -120,12 +114,8 @@ func (s *localStore) PresignPut(ctx context.Context, key, contentType string, si
 	return "/api/v1/devblob/" + key + "?op=put&len=" + strconv.FormatInt(size, 10), nil
 }
 
-func (s *localStore) PresignGet(ctx context.Context, key, filename string, download bool, ttl time.Duration) (string, error) {
-	u := "/api/v1/devblob/" + key + "?op=get"
-	if download {
-		u += "&dl=1&fn=" + url.QueryEscape(filename)
-	}
-	return u, nil
+func (s *localStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	return os.Open(filepath.Join(s.dir, filepath.FromSlash(key)))
 }
 
 func (s *localStore) Head(ctx context.Context, key string) (int64, error) {
@@ -183,25 +173,6 @@ func (a *application) devBlob(w http.ResponseWriter, r *http.Request) {
 		ct := r.Header.Get("Content-Type")
 		_ = os.WriteFile(base+".meta", []byte(ct), 0640)
 		w.WriteHeader(http.StatusOK)
-	case "get":
-		fi, err := os.Stat(base)
-		if err != nil {
-			jsonError(w, 404, "NOT_FOUND", "tidak ditemukan")
-			return
-		}
-		ct, _ := os.ReadFile(base + ".meta")
-		w.Header().Set("Content-Type", string(ct))
-		w.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
-		if r.URL.Query().Get("dl") == "1" {
-			w.Header().Set("Content-Disposition", `attachment; filename="`+sanitizeHeaderFilename(r.URL.Query().Get("fn"))+`"`)
-		}
-		f, err := os.Open(base)
-		if err != nil {
-			jsonError(w, 500, "INTERNAL_ERROR", "gagal membaca")
-			return
-		}
-		defer f.Close()
-		_, _ = io.Copy(w, f)
 	default:
 		jsonError(w, 400, "VALIDATION_ERROR", "op tidak valid")
 	}
@@ -481,11 +452,11 @@ func (a *application) downloadAttachment(w http.ResponseWriter, r *http.Request)
 	}
 	u := r.Context().Value(userKey{}).(user)
 	id := r.PathValue("id")
-	var at attachmentJSON
-	var status string
+	var status, filename, contentType, kind string
+	var size int64
 	var deletedAt sql.NullInt64
-	err := a.db.QueryRowContext(r.Context(), "SELECT status,filename,content_type,size_bytes,kind,created_at,deleted_at FROM attachments WHERE user_id=? AND id=?", u.ID, id).
-		Scan(&status, &at.Filename, &at.ContentType, &at.SizeBytes, &at.Kind, &at.CreatedAt, &deletedAt)
+	err := a.db.QueryRowContext(r.Context(), "SELECT status,filename,content_type,size_bytes,kind,deleted_at FROM attachments WHERE user_id=? AND id=?", u.ID, id).
+		Scan(&status, &filename, &contentType, &size, &kind, &deletedAt)
 	if errors.Is(err, sql.ErrNoRows) || deletedAt.Valid || status != "active" {
 		jsonError(w, 404, "NOT_FOUND", "tidak ditemukan")
 		return
@@ -494,14 +465,21 @@ func (a *application) downloadAttachment(w http.ResponseWriter, r *http.Request)
 		jsonError(w, 500, "INTERNAL_ERROR", "gagal membaca lampiran")
 		return
 	}
-	at.ID = id
-	urlStr, err := a.store.PresignGet(r.Context(), u.ID+"/"+id, at.Filename, at.Kind == "document", presignTTL)
+	body, err := a.store.Get(r.Context(), u.ID+"/"+id)
 	if err != nil {
-		a.logger.Error("attachment_presign_get_failed", "user", u.ID, "error", err)
-		jsonError(w, 500, "INTERNAL_ERROR", "gagal menyiapkan unduhan")
+		a.logger.Error("attachment_get_failed", "user", u.ID, "error", err)
+		jsonError(w, 404, "NOT_FOUND", "tidak ditemukan")
 		return
 	}
-	jsonOK(w, map[string]any{"url": urlStr, "expires_in": int(presignTTL / time.Second), "attachment": at, "server_time": time.Now().UnixMilli()})
+	defer body.Close()
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.Header().Set("Cache-Control", "private, max-age=300")
+	if r.URL.Query().Get("dl") == "1" || kind == "document" {
+		w.Header().Set("Content-Disposition", `attachment; filename="`+sanitizeHeaderFilename(filename)+`"`)
+	}
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	io.Copy(w, io.LimitReader(body, size))
 }
 
 func (a *application) deleteAttachment(w http.ResponseWriter, r *http.Request) {

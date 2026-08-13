@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -26,8 +27,14 @@ func newFakeStore() *fakeStore { return &fakeStore{objs: map[string][]byte{}} }
 func (f *fakeStore) PresignPut(ctx context.Context, key, contentType string, size int64, ttl time.Duration) (string, error) {
 	return "fake://put/" + key, nil
 }
-func (f *fakeStore) PresignGet(ctx context.Context, key, filename string, download bool, ttl time.Duration) (string, error) {
-	return "fake://get/" + key, nil
+func (f *fakeStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	b, ok := f.objs[key]
+	if !ok {
+		return nil, errors.New("not found")
+	}
+	return io.NopCloser(bytes.NewReader(b)), nil
 }
 func (f *fakeStore) Head(ctx context.Context, key string) (int64, error) {
 	f.mu.Lock()
@@ -131,8 +138,8 @@ func TestAttachHappyPath(t *testing.T) {
 	}
 
 	w = a.do(t, u, "GET", "/api/v1/attachments/"+id+"/download", nil)
-	if w.Code != 200 || !strings.Contains(w.Body.String(), "fake://get/") {
-		t.Fatalf("download: %d %s", w.Code, w.Body.String())
+	if w.Code != 200 || w.Body.Len() != 100 || w.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("download: %d len=%d ct=%s", w.Code, w.Body.Len(), w.Header().Get("Content-Type"))
 	}
 
 	// confirm is idempotent

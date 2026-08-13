@@ -33,7 +33,6 @@
     clockOffset: 0,
     lastStamp: 0,
     attachments: [],
-    attachUrls: Object.create(null),
   };
   const tabChannel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('litenotes-sync-v1') : null;
 
@@ -555,15 +554,7 @@
   }
 
   const attachMeta = (id) => state.attachments.find((a) => a.id === id) || null;
-
-  async function resolveAttachUrl(id) {
-    const cached = state.attachUrls[id];
-    if (cached && cached.exp > Date.now()) return cached.url;
-    const j = await api('/api/v1/attachments/' + id + '/download');
-    // 10-minute safety margin under the 15-minute presign expiry
-    state.attachUrls[id] = { url: j.url, exp: Date.now() + 10 * 60 * 1000 };
-    return j.url;
-  }
+  const attachFileURL = (id, dl) => '/api/v1/attachments/' + id + '/download' + (dl ? '?dl=1' : '');
 
   /* -------------------------------------------------------------- routing */
 
@@ -1127,39 +1118,14 @@
       const done = m[2] === '✅' ? ' done' : '';
       return `<div class="content-line checklist-line">${m[1]}<span class="mark-slot">${m[2]}<span class="${mark}" aria-hidden="true">${m[2] === '✅' ? '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.6" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12.8 4.6 4.6L19 7.6"/></svg>' : ''}</span></span>${m[3]}<span class="cl-text${done}">${formatInline(m[4]) || '&nbsp;'}</span></div>`;
     }).join('');
-    queueAttachResolves();
   }
 
-  // Presigned URLs are ephemeral, so embeds resolve lazily after render; the cache
-  // check keeps this a no-op on every render after the first resolve.
-  let attachResolving = false;
-  function queueAttachResolves() {
-    if (attachResolving || !state.online || !attachmentsOn()) return;
-    const host = $('#content-render');
-    if (!host) return;
-    const ids = [...new Set([...host.querySelectorAll('.attach-slot[data-attach]')]
-      .map((el) => el.dataset.attach)
-      .filter((id) => attachMeta(id) && !(state.attachUrls[id]?.exp > Date.now())))];
-    if (!ids.length) return;
-    attachResolving = true;
-    Promise.allSettled(ids.map((id) => resolveAttachUrl(id).catch(() => null))).then(() => {
-      attachResolving = false;
-      rerenderOverlay();
-    });
-  }
-
-  // Attachment embeds live in a pointer-events:none overlay, so the slot re-enables
-  // pointer events the same way checklist marks do (see .mark-slot).
+  // Attachment embeds render as editable-title links; clicking opens a modal view.
   function attachCardHTML(name, id) {
     const meta = attachMeta(id);
-    if (!state.online) return `<span class="attach-slot attach-offline" data-attach="${id}">${icon('cloud', 14)} ${esc(name)} · online only</span>`;
-    if (!meta) return `<span class="attach-slot attach-missing" data-attach="${id}">${icon('trash', 14)} ${esc(name)}</span>`;
-    const url = state.attachUrls[id]?.url;
-    if (meta.kind === 'image' && url) {
-      return `<span class="attach-slot" data-attach="${id}"><img class="attach-img" src="${esc(url)}" alt="${esc(name)}" loading="lazy"></span>`;
-    }
-    const ic = meta.kind === 'image' ? 'note' : 'note';
-    return `<span class="attach-slot attach-chip" data-attach="${id}">${icon(ic, 14)}<span class="attach-name">${esc(name)}</span><span class="attach-size">${humanSize(meta.size_bytes)}</span></span>`;
+    if (!state.online) return `<span class="attach-slot attach-offline" data-attach="${id}">${icon('cloud', 14)}<span class="attach-name">${esc(name)}</span></span>`;
+    if (!meta) return `<span class="attach-slot attach-missing" data-attach="${id}">${icon('trash', 14)}<span class="attach-name">${esc(name)}</span></span>`;
+    return `<span class="attach-slot attach-link" data-attach="${id}" title="${esc(meta.filename)} · ${humanSize(meta.size_bytes)}">${icon('paperclip', 14)}<span class="attach-name">${esc(name)}</span></span>`;
   }
 
   function rerenderOverlay() {
@@ -1168,23 +1134,26 @@
   }
 
   async function openAttachment(id) {
+    const meta = attachMeta(id);
+    if (!meta) { toast('Attachment tidak tersedia'); return; }
     if (!state.online) { toast('Internet connection required for this action.'); return; }
-    try {
-      const url = await resolveAttachUrl(id);
-      const meta = attachMeta(id);
-      if (meta && meta.kind === 'image') {
-        window.open(url, '_blank', 'noopener');
-      } else {
-        const a = document.createElement('a');
-        a.href = url;
-        a.rel = 'noopener';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-      }
-      rerenderOverlay();
-    } catch (e) {
-      toast(netMessage(e));
+    const preview = meta.kind === 'image'
+      ? `<img class="attach-preview" src="${esc(attachFileURL(id, false))}" alt="${esc(meta.filename)}">`
+      : `<div class="attach-preview-doc">${icon('note', 28)}</div>`;
+    const act = await modal({
+      title: meta.filename,
+      previewHTML: preview,
+      description: `${humanSize(meta.size_bytes)} · ${meta.content_type}`,
+      choices: [{ value: 'download', label: 'Download', icon: 'download' }],
+      cancelText: 'Close',
+    });
+    if (act === 'download') {
+      const a = document.createElement('a');
+      a.href = attachFileURL(id, true);
+      a.download = meta.filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
     }
   }
 
@@ -1229,7 +1198,6 @@
         await uploadBytes(created.upload_url, file, (p) => pt.update(p));
         await api('/api/v1/attachments/' + attId + '/confirm', { method: 'POST', body: '{}' });
         await refreshAttachments();
-        delete state.attachUrls[attId];
         insertAttachmentRef(created.attachment);
         pt.done(`${file.name} terupload`);
       } catch (e) {
@@ -1266,7 +1234,6 @@
       try {
         await api('/api/v1/attachments/' + pick, { method: 'DELETE' });
         state.attachments = state.attachments.filter((a) => a.id !== pick);
-        delete state.attachUrls[pick];
         rerenderOverlay();
         toast('Attachment dihapus');
       } catch (e) {
@@ -2472,7 +2439,7 @@
 
   /* --------------------------------------------------------------- modals */
 
-  function modal({ title, description, fields, choices, confirmText = 'Save', cancelText = 'Cancel', danger = false, validate, emptyText }) {
+  function modal({ title, description, previewHTML, fields, choices, confirmText = 'Save', cancelText = 'Cancel', danger = false, validate, emptyText }) {
     const dlg = $('#modal');
     if (!dlg) return Promise.resolve(null);
 
@@ -2497,6 +2464,7 @@
         <div class="modal-body">
           <h2>${esc(title)}</h2>
           ${description ? `<p class="desc">${esc(description)}</p>` : ''}
+          ${previewHTML || ''}
           ${body}
           <p class="err" id="modal-error" role="alert"></p>
         </div>
@@ -2750,7 +2718,7 @@
       if (!reloading) return;
       location.reload();
     });
-    navigator.serviceWorker.register('/sw.js?v=63').then((reg) => {
+    navigator.serviceWorker.register('/sw.js?v=64').then((reg) => {
       reg.addEventListener('updatefound', () => {
         const worker = reg.installing;
         if (!worker) return;
