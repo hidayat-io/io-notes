@@ -239,6 +239,7 @@
       const lineEnd = lineEndAt === -1 ? value.length : lineEndAt;
       const lineText = value.slice(lineStart, lineEnd);
       const item = listItemAt(lineText);
+      const atLineEnd = s === lineEnd;
       if (!item) {
         const compact = /^(\s*)-(\d+)$/.exec(lineText);
         if (!compact || !atLineEnd) return; // plain paragraph — default Enter
@@ -250,14 +251,13 @@
         return;
       }
       ev.preventDefault();
-      const atLineEnd = s === lineEnd;
       if (item.rest.trim() === '' && atLineEnd) {
         // Empty item + Enter leaves the list.
         applyEdit(c, value.slice(0, lineStart) + value.slice(lineEnd), lineStart);
         return;
       }
       let cont;
-      if (item.kind === 'ol') cont = `${item.indent}${parseInt(item.marker, 10) + 1}${item.sep} `;
+      if (item.kind === 'ol') cont = `${item.indent}${parseInt(item.marker, 10) + 1}${item.sep.trimEnd()} `;
       else if (item.kind === 'task') cont = `${item.indent}- [ ] `;
       else if (item.kind === 'task-visual') cont = `${item.indent}${item.marker} `;
       else cont = `${item.indent}${item.marker} `;
