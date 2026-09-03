@@ -123,13 +123,37 @@ copy.
 
 ## R2 attachments
 
-File/image uploads store bytes in Cloudflare R2 (private bucket). The server never
-proxies bytes: browsers PUT directly to short-lived presigned URLs, and quota is
-enforced server-side by reserving bytes in a `pending` row before the presign is
-issued. Unconfirmed uploads and soft-deleted attachments are swept (row deleted in
-the DB transaction, object deleted after commit) after 60 minutes; a failed object
-delete is logged as `attachment_orphan` and can be cleaned manually with
+File/image uploads store bytes in Cloudflare R2 (private bucket). Browsers upload
+directly to short-lived presigned URLs; authenticated downloads and previews are
+proxied by the application so the bucket remains private. Quota is enforced
+server-side by reserving bytes in a `pending` row before the presign is issued.
+Unconfirmed uploads and soft-deleted attachments are swept (row deleted in the DB
+transaction, object deleted after commit) after 60 minutes; a failed object delete
+is logged as `attachment_orphan` and can be cleaned manually with
 `wrangler r2 object delete <bucket> <key>`.
+
+### Preview contract
+
+The authenticated same-origin download route also serves safe inline previews:
+
+| Content type | Client preview | Server disposition |
+|---|---|---|
+| `image/jpeg`, `image/png`, `image/webp`, `image/gif` | `<img>` | Inline/default |
+| `text/markdown` | Escaped, client-rendered Markdown | Inline with `?preview=1` |
+| `text/plain` | Plain text | Inline with `?preview=1` |
+| `application/pdf` | Same-origin browser PDF viewer | Inline with `?preview=1` |
+| Word, Excel, ZIP | No inline renderer; download fallback | Attachment |
+
+Text and Markdown previews are capped at 512 KiB by the client. The response for
+`?preview=1` is sandboxed with a restrictive CSP and may only be framed by the same
+origin. The regular URL and `?dl=1` retain attachment semantics. Do not expand the
+inline allowlist to HTML, SVG, or arbitrary MIME types: attachment metadata is
+user-controlled, and those formats can execute active content.
+
+The browser canonicalizes the upload MIME type from the allowlisted extension. This
+is especially important for `.md`, because some browsers report an empty or
+inconsistent `File.type`; the create request and signed R2 PUT must use the same
+content type.
 
 One-time setup:
 
@@ -174,7 +198,13 @@ curl -s -b "$C" -H 'Content-Type: application/json' https://note.indoomega.my.id
   -d '{"filename":"t.txt","content_type":"text/plain","size_bytes":5}'
 curl -s -X PUT -H 'Content-Type: text/plain' --data-binary 'hello' "<upload_url from previous response>"
 curl -s -b "$C" -X POST https://note.indoomega.my.id/api/v1/attachments/<id>/confirm -d '{}'
+curl -sSI -b "$C" 'https://note.indoomega.my.id/api/v1/attachments/<id>/download?preview=1'
 ```
+
+For the preview response, verify `Content-Disposition: inline`, the declared safe
+`Content-Type`, `X-Content-Type-Options: nosniff`, and a CSP containing `sandbox`
+and `frame-ancestors 'self'`. Also open the attachment from the note UI after login;
+an existing installed PWA may need to accept the new-version reload prompt first.
 
 Rollback is safe: the schema change is additive (new `attachments` table) and old
 binaries ignore it; removing the `R2_*` env vars turns the feature off.

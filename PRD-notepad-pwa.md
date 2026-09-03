@@ -1520,6 +1520,12 @@ Urutan rekomendasi:
 - Attachment gambar dengan object storage terpisah.
 - Account/session management dan revoke all sessions.
 
+Status per 3 September 2026: folder, Markdown preview, dan attachment private sudah
+diimplementasikan. Attachment mendukung preview inline untuk image, Markdown,
+plain text, dan PDF; Word/Excel/ZIP menggunakan fallback download. Preview Markdown
+dan text dibatasi 512 KiB, HTML selalu di-escape, dan response inline memakai CSP
+sandbox. Account/session management lanjutan dan revoke-all session tetap backlog.
+
 ### Permanent Delete
 
 Permanent delete tidak boleh sekadar menghapus row `notes`. Desain berikutnya membutuhkan purge tombstone atau retention protocol yang memastikan seluruh device tidak menghidupkan kembali note lama. Fitur ini harus memiliki PRD sync tersendiri.
@@ -1694,7 +1700,7 @@ Jangan mengganti catch-all nginx/cloudflared route sebelum hostname dan OAuth or
 3. Restart service.
 4. Uji `/healthz`, login Google, cookie Secure, service worker, dan sync dua browser.
 
-Status deployment per 17 Juli 2026:
+Status deployment per 3 September 2026:
 
 - DNS CNAME `note.indoomega.my.id` sudah dibuat di Cloudflare dan proxied.
 - Cloudflare Tunnel `3c998b49-c0ad-43e8-8ff4-2a4d268ed2ba` sudah memiliki ingress `note.indoomega.my.id -> http://localhost:8091`.
@@ -1703,6 +1709,7 @@ Status deployment per 17 Juli 2026:
 - Public request tidak dapat memakai `/api/v1/auth/dev`; endpoint tersebut dikunci hanya untuk Host localhost/127.0.0.1.
 - `GOOGLE_CLIENT_ID` sudah dikonfigurasi pada host dan `AUTH_MODE=google` + `APP_ENV=production` sudah aktif dengan session secret baru. Invalid Google credential diuji menghasilkan 401 dan endpoint dev-auth publik menghasilkan 404.
 - Login Google real masih perlu diuji manual dari browser dengan akun yang sudah didaftarkan sebagai OAuth test user/authorized account.
+- Release `2eb2ad0` menambahkan preview attachment Markdown, plain text, dan PDF; shell PWA `v67`, health/readiness publik, serta konfigurasi R2 aktif sudah lulus smoke test.
 
 ### 27.7 Password per Note dan Reset via Email
 
