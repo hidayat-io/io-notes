@@ -68,10 +68,10 @@ func newAttachApp(t *testing.T, store objectStore, mutate func(*config)) *applic
 	cfg := config{
 		Port: "0", AppOrigin: "http://127.0.0.1:8091", AppEnv: "test", AuthMode: "dev",
 		SessionSecret: "test-secret-that-is-long-enough-32", SessionTTL: time.Hour,
-		DatabaseURL:            "file:" + filepath.Join(t.TempDir(), "test.db"),
-		AttachMaxBytes:         2000,
-		AttachUserQuotaBytes:   2000,
-		AttachGlobalCapBytes:   10000,
+		DatabaseURL:          "file:" + filepath.Join(t.TempDir(), "test.db"),
+		AttachMaxBytes:       2000,
+		AttachUserQuotaBytes: 2000,
+		AttachGlobalCapBytes: 10000,
 	}
 	if mutate != nil {
 		mutate(&cfg)
@@ -146,6 +146,45 @@ func TestAttachHappyPath(t *testing.T) {
 	w = a.do(t, u, "POST", "/api/v1/attachments/"+id+"/confirm", map[string]any{})
 	if w.Code != 200 {
 		t.Fatalf("idempotent confirm: %d", w.Code)
+	}
+}
+
+func TestAttachSafeInlinePreview(t *testing.T) {
+	fs := newFakeStore()
+	a := newAttachApp(t, fs, nil)
+	u := a.mustUser(t, "dev:alice", "alice@test.local")
+	body := []byte("# Preview\n\nHello **world**")
+
+	w := createAttach(t, a, u, "notes.md", "text/markdown", int64(len(body)))
+	if w.Code != 200 {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	id := decodeAttach(t, w)["attachment"].(map[string]any)["id"].(string)
+	fs.put(u.ID+"/"+id, body)
+	if w = a.do(t, u, "POST", "/api/v1/attachments/"+id+"/confirm", map[string]any{}); w.Code != 200 {
+		t.Fatalf("confirm: %d %s", w.Code, w.Body.String())
+	}
+
+	w = a.do(t, u, "GET", "/api/v1/attachments/"+id+"/download?preview=1", nil)
+	if w.Code != 200 || w.Body.String() != string(body) {
+		t.Fatalf("preview: %d %q", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "inline;") {
+		t.Fatalf("preview disposition = %q", got)
+	}
+	if got := w.Header().Get("Content-Type"); got != "text/markdown; charset=utf-8" {
+		t.Fatalf("preview content type = %q", got)
+	}
+	if got := w.Header().Get("Content-Security-Policy"); !strings.Contains(got, "sandbox") || !strings.Contains(got, "frame-ancestors 'self'") {
+		t.Fatalf("preview CSP = %q", got)
+	}
+
+	// The regular URL and an explicit download must retain attachment semantics.
+	for _, suffix := range []string{"", "?dl=1"} {
+		w = a.do(t, u, "GET", "/api/v1/attachments/"+id+"/download"+suffix, nil)
+		if got := w.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment;") {
+			t.Fatalf("download %q disposition = %q", suffix, got)
+		}
 	}
 }
 

@@ -406,7 +406,7 @@ func TestSecurityHeaders(t *testing.T) {
 		}
 	}
 	csp := w.Header().Get("Content-Security-Policy")
-	for _, needle := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "https://accounts.google.com/gsi/client"} {
+	for _, needle := range []string{"default-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "frame-src 'self'", "https://accounts.google.com/gsi/client"} {
 		if !strings.Contains(csp, needle) {
 			t.Errorf("CSP missing %q; got %s", needle, csp)
 		}

@@ -514,16 +514,23 @@
   const attachMaxBytes = () => Number(cfg.attachMaxBytes) || 10 * 1024 * 1024;
   const ATTACH_ACCEPT = '.jpg,.jpeg,.png,.webp,.gif,.pdf,.doc,.docx,.xls,.xlsx,.txt,.md,.zip';
   const ATTACH_EXT_OK = { jpg: 1, jpeg: 1, png: 1, webp: 1, gif: 1, pdf: 1, doc: 1, docx: 1, xls: 1, xlsx: 1, txt: 1, md: 1, zip: 1 };
+  const ATTACH_CONTENT_TYPE = {
+    jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp', gif: 'image/gif',
+    pdf: 'application/pdf', doc: 'application/msword', docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    xls: 'application/vnd.ms-excel', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    txt: 'text/plain', md: 'text/markdown', zip: 'application/zip',
+  };
+  const MAX_TEXT_PREVIEW_BYTES = 512 * 1024;
   const attachExt = (name) => (name.lastIndexOf('.') > -1 ? name.slice(name.lastIndexOf('.') + 1).toLowerCase() : '');
   const humanSize = (b) => b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(b / 1024)) + ' KB';
 
   // fetch() has no upload progress, so uploads go through XHR. The Content-Type
   // header must equal the type declared at create time: R2 signs it.
-  function uploadBytes(url, file, onProgress) {
+  function uploadBytes(url, file, contentType, onProgress) {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open('PUT', url);
-      xhr.setRequestHeader('Content-Type', file.type);
+      xhr.setRequestHeader('Content-Type', contentType);
       xhr.upload.onprogress = (e) => { if (e.lengthComputable && onProgress) onProgress(e.loaded / e.total); };
       xhr.onload = () => (xhr.status >= 200 && xhr.status < 300 ? resolve() : reject(Object.assign(new Error('Upload gagal (HTTP ' + xhr.status + ')'), { status: xhr.status })));
       xhr.onerror = () => reject(Object.assign(new Error('Internet connection required for this action.'), { offline: true }));
@@ -555,6 +562,7 @@
 
   const attachMeta = (id) => state.attachments.find((a) => a.id === id) || null;
   const attachFileURL = (id, dl) => '/api/v1/attachments/' + id + '/download' + (dl ? '?dl=1' : '');
+  const attachPreviewURL = (id) => '/api/v1/attachments/' + id + '/download?preview=1';
 
   /* -------------------------------------------------------------- routing */
 
@@ -1132,6 +1140,131 @@
     if (c) renderContentOverlay(c.value);
   }
 
+  // A deliberately small Markdown renderer for attachment previews. It starts
+  // by escaping every source character and only emits a known-safe HTML subset;
+  // uploaded HTML is never interpreted. Remote images are shown as labels so a
+  // preview cannot silently make tracking requests.
+  function markdownInline(source) {
+    const code = [];
+    let out = esc(source).replace(/`([^`\n]+)`/g, (_, value) => {
+      const token = `\uE000${code.length}\uE001`;
+      code.push(`<code>${value}</code>`);
+      return token;
+    });
+    out = out
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '<span class="md-image-label">[Image: $1]</span>')
+      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s()]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
+      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/~~([^~\n]+)~~/g, '<s>$1</s>')
+      .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>')
+      .replace(/(^|[^_])_([^_\n]+)_(?![A-Za-z0-9])/g, '$1<em>$2</em>');
+    return out.replace(/\uE000(\d+)\uE001/g, (_, i) => code[Number(i)] || '');
+  }
+
+  function renderMarkdown(source) {
+    const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
+    const html = [];
+    let codeLines = null;
+    let codeLanguage = '';
+    let list = '';
+    let listClass = '';
+    const closeList = () => {
+      if (!list) return;
+      html.push(`</${list}>`);
+      list = '';
+      listClass = '';
+    };
+    const openList = (type, className = '') => {
+      if (list === type && listClass === className) return;
+      closeList();
+      list = type;
+      listClass = className;
+      html.push(`<${type}${className ? ` class="${className}"` : ''}>`);
+    };
+
+    for (const line of lines) {
+      const fence = /^\s*```\s*([^\s`]*)/.exec(line);
+      if (fence) {
+        if (codeLines) {
+          const language = codeLanguage ? `<span class="md-code-language">${esc(codeLanguage)}</span>` : '';
+          html.push(`<pre class="md-code">${language}<code>${esc(codeLines.join('\n'))}</code></pre>`);
+          codeLines = null;
+          codeLanguage = '';
+        } else {
+          closeList();
+          codeLines = [];
+          codeLanguage = fence[1] || '';
+        }
+        continue;
+      }
+      if (codeLines) { codeLines.push(line); continue; }
+
+      let m = /^(#{1,6})\s+(.+)$/.exec(line);
+      if (m) { closeList(); const level = m[1].length; html.push(`<h${level}>${markdownInline(m[2])}</h${level}>`); continue; }
+      if (/^\s*(?:---+|___+|\*\*\*+)\s*$/.test(line)) { closeList(); html.push('<hr>'); continue; }
+      m = /^\s*>\s?(.*)$/.exec(line);
+      if (m) { closeList(); html.push(`<blockquote>${markdownInline(m[1]) || '&nbsp;'}</blockquote>`); continue; }
+      m = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line);
+      if (m) {
+        openList('ul', 'md-task-list');
+        html.push(`<li><input type="checkbox" disabled${m[1].toLowerCase() === 'x' ? ' checked' : ''}><span>${markdownInline(m[2])}</span></li>`);
+        continue;
+      }
+      m = /^\s*[-*+]\s+(.*)$/.exec(line);
+      if (m) { openList('ul'); html.push(`<li>${markdownInline(m[1])}</li>`); continue; }
+      m = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+      if (m) { openList('ol'); html.push(`<li>${markdownInline(m[1])}</li>`); continue; }
+      closeList();
+      if (!line.trim()) html.push('<div class="md-space"></div>');
+      else html.push(`<p>${markdownInline(line)}</p>`);
+    }
+    closeList();
+    if (codeLines) {
+      const language = codeLanguage ? `<span class="md-code-language">${esc(codeLanguage)}</span>` : '';
+      html.push(`<pre class="md-code">${language}<code>${esc(codeLines.join('\n'))}</code></pre>`);
+    }
+    return html.join('');
+  }
+
+  function attachmentPreviewHTML(meta, id) {
+    if (meta.kind === 'image') {
+      return `<img class="attach-preview" src="${esc(attachFileURL(id, false))}" alt="${esc(meta.filename)}">`;
+    }
+    if (meta.content_type === 'application/pdf') {
+      return `<iframe class="attach-preview-frame" src="${esc(attachPreviewURL(id))}" title="Preview ${esc(meta.filename)}"></iframe>`;
+    }
+    if (meta.content_type === 'text/markdown' || meta.content_type === 'text/plain') {
+      return `<div class="attach-preview-text" data-attachment-preview="${esc(id)}"><span class="spinner"></span><span>Memuat preview…</span></div>`;
+    }
+    return `<div class="attach-preview-doc">${icon('note', 28)}<span>Preview belum tersedia untuk jenis file ini.</span><small>File tetap dapat di-download.</small></div>`;
+  }
+
+  async function loadTextAttachmentPreview(meta, id, host) {
+    if (!host) return;
+    if (meta.size_bytes > MAX_TEXT_PREVIEW_BYTES) {
+      host.classList.add('attach-preview-message');
+      host.innerHTML = `<strong>File terlalu besar untuk preview.</strong><span>Batas preview teks ${humanSize(MAX_TEXT_PREVIEW_BYTES)}. File tetap dapat di-download.</span>`;
+      return;
+    }
+    try {
+      const response = await fetch(attachPreviewURL(id), { headers: { Accept: meta.content_type } });
+      if (!response.ok) throw new Error('Preview gagal dimuat (HTTP ' + response.status + ')');
+      const text = await response.text();
+      if (!host.isConnected) return;
+      if (meta.content_type === 'text/markdown') {
+        host.classList.add('markdown-preview');
+        host.innerHTML = renderMarkdown(text);
+      } else {
+        host.classList.add('plain-text-preview');
+        host.textContent = text;
+      }
+    } catch (e) {
+      if (!host.isConnected) return;
+      host.classList.add('attach-preview-message');
+      host.innerHTML = `<strong>Preview tidak dapat dimuat.</strong><span>${esc(netMessage(e))}</span>`;
+    }
+  }
+
   async function openAttachment(id) {
     const meta = attachMeta(id);
     if (!meta) {
@@ -1140,10 +1273,8 @@
       return;
     }
     if (!state.online) { toast('Internet connection required for this action.'); return; }
-    const preview = meta.kind === 'image'
-      ? `<img class="attach-preview" src="${esc(attachFileURL(id, false))}" alt="${esc(meta.filename)}">`
-      : `<div class="attach-preview-doc">${icon('note', 28)}</div>`;
-    const act = await modal({
+    const preview = attachmentPreviewHTML(meta, id);
+    const result = modal({
       title: meta.filename,
       previewHTML: preview,
       description: `${humanSize(meta.size_bytes)} · ${meta.content_type}`,
@@ -1151,6 +1282,9 @@
       cancelText: 'Close',
       wide: true,
     });
+    const previewHost = document.querySelector(`[data-attachment-preview="${id}"]`);
+    if (previewHost) void loadTextAttachmentPreview(meta, id, previewHost);
+    const act = await result;
     if (act === 'download') {
       const a = document.createElement('a');
       a.href = attachFileURL(id, true);
@@ -1217,13 +1351,16 @@
       const ext = attachExt(file.name);
       if (!ATTACH_EXT_OK[ext]) { toast(`Jenis file .${ext || '?'} tidak didukung`); continue; }
       if (file.size > attachMaxBytes()) { toast(`"${file.name}" melebihi batas ${Math.round(attachMaxBytes() / 1048576)} MB`); continue; }
-      if (!file.type) { toast(`"${file.name}" tidak punya tipe yang dikenal`); continue; }
+      // File.type is empty or inconsistent for Markdown on several browsers.
+      // Canonicalising from the already allowlisted extension also guarantees
+      // that the signed upload and the create request use the exact same MIME.
+      const contentType = ATTACH_CONTENT_TYPE[ext];
       const pt = progressToast(`Mengupload ${file.name}…`);
       let attId = null;
       try {
-        const created = await api('/api/v1/attachments', { method: 'POST', body: JSON.stringify({ filename: file.name, content_type: file.type, size_bytes: file.size }) });
+        const created = await api('/api/v1/attachments', { method: 'POST', body: JSON.stringify({ filename: file.name, content_type: contentType, size_bytes: file.size }) });
         attId = created.attachment.id;
-        await uploadBytes(created.upload_url, file, (p) => pt.update(p));
+        await uploadBytes(created.upload_url, file, contentType, (p) => pt.update(p));
         await api('/api/v1/attachments/' + attId + '/confirm', { method: 'POST', body: '{}' });
         await refreshAttachments();
         insertAttachmentRef(created.attachment);

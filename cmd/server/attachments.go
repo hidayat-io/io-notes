@@ -186,19 +186,19 @@ type attachRule struct {
 }
 
 var attachAllowlist = map[string]attachRule{
-	"image/jpeg":    {"image", []string{"jpg", "jpeg"}},
-	"image/png":     {"image", []string{"png"}},
-	"image/webp":    {"image", []string{"webp"}},
-	"image/gif":     {"image", []string{"gif"}},
-	"application/pdf": {"document", []string{"pdf"}},
+	"image/jpeg":         {"image", []string{"jpg", "jpeg"}},
+	"image/png":          {"image", []string{"png"}},
+	"image/webp":         {"image", []string{"webp"}},
+	"image/gif":          {"image", []string{"gif"}},
+	"application/pdf":    {"document", []string{"pdf"}},
 	"application/msword": {"document", []string{"doc"}},
 	"application/vnd.openxmlformats-officedocument.wordprocessingml.document": {"document", []string{"docx"}},
 	"application/vnd.ms-excel": {"document", []string{"xls"}},
-	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet":       {"document", []string{"xlsx"}},
-	"text/plain":    {"document", []string{"txt"}},
-	"text/markdown": {"document", []string{"md"}},
-	"application/zip":                {"document", []string{"zip"}},
-	"application/x-zip-compressed":   {"document", []string{"zip"}},
+	"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {"document", []string{"xlsx"}},
+	"text/plain":                   {"document", []string{"txt"}},
+	"text/markdown":                {"document", []string{"md"}},
+	"application/zip":              {"document", []string{"zip"}},
+	"application/x-zip-compressed": {"document", []string{"zip"}},
 }
 
 func sanitizeFilename(name string) string {
@@ -237,6 +237,19 @@ func containsString(list []string, v string) bool {
 		}
 	}
 	return false
+}
+
+// Only formats that browsers can display without executing uploaded HTML or
+// relying on a third-party document service may be served inline. Markdown and
+// plain text are fetched and rendered by the client; PDF uses the browser's
+// built-in viewer.
+func inlinePreviewType(contentType string) bool {
+	switch contentType {
+	case "application/pdf", "text/plain", "text/markdown":
+		return true
+	default:
+		return false
+	}
 }
 
 /* -------------------------------------------------------- handlers */
@@ -362,9 +375,9 @@ func (a *application) createAttachment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	jsonOK(w, map[string]any{
-		"attachment": attachmentJSON{ID: id, Filename: name, ContentType: in.ContentType, SizeBytes: in.SizeBytes, Kind: rule.kind, Status: "pending", CreatedAt: now},
-		"upload_url": uploadURL,
-		"expires_in": int(presignTTL / time.Second),
+		"attachment":  attachmentJSON{ID: id, Filename: name, ContentType: in.ContentType, SizeBytes: in.SizeBytes, Kind: rule.kind, Status: "pending", CreatedAt: now},
+		"upload_url":  uploadURL,
+		"expires_in":  int(presignTTL / time.Second),
 		"server_time": now,
 	})
 }
@@ -472,11 +485,22 @@ func (a *application) downloadAttachment(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	defer body.Close()
-	w.Header().Set("Content-Type", contentType)
+	if contentType == "text/plain" || contentType == "text/markdown" {
+		w.Header().Set("Content-Type", contentType+"; charset=utf-8")
+	} else {
+		w.Header().Set("Content-Type", contentType)
+	}
 	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
 	w.Header().Set("Cache-Control", "private, max-age=300")
-	if r.URL.Query().Get("dl") == "1" || kind == "document" {
+	preview := r.URL.Query().Get("preview") == "1" && inlinePreviewType(contentType)
+	if r.URL.Query().Get("dl") == "1" || (kind == "document" && !preview) {
 		w.Header().Set("Content-Disposition", `attachment; filename="`+sanitizeHeaderFilename(filename)+`"`)
+	} else if preview {
+		w.Header().Set("Content-Disposition", `inline; filename="`+sanitizeHeaderFilename(filename)+`"`)
+		// The site shell itself must never be framed, but a PDF preview must be.
+		// Keep uploaded inline content sandboxed and restrict its only ancestor to
+		// this application instead of inheriting the shell's frame-ancestors 'none'.
+		w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'; frame-ancestors 'self'")
 	}
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	io.Copy(w, io.LimitReader(body, size))

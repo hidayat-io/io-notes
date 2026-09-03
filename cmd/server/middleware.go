@@ -242,7 +242,8 @@ func cspFor(indexHTML []byte, cfg config) string {
 		"style-src 'self' https://accounts.google.com/gsi/style 'unsafe-inline'",
 		"img-src 'self' data: https:",
 		"connect-src " + connectSrc,
-		"frame-src https://accounts.google.com/gsi/",
+		// Same-origin frames are used only for authenticated PDF attachment previews.
+		"frame-src 'self' https://accounts.google.com/gsi/",
 		"manifest-src 'self'",
 		"worker-src 'self'",
 	}, "; ")
