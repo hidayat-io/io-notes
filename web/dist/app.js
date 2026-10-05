@@ -457,7 +457,9 @@
     const cached = await request(tx(['meta']).objectStore('meta').get('cached_user'));
     if (!cached?.value?.id || cached.value.id !== state.user.id) return;
     const marker = await request(tx(['meta']).objectStore('meta').get('legacy_migrated_for'));
-    if (marker?.value === state.user.id) return;
+    // Legacy stores were never cleared: once one account has imported them they are
+    // its data, and any other account cached here later must not import them again.
+    if (marker?.value) return;
 
     const legacyNotes = await request(tx(['notes']).objectStore('notes').getAll());
     const legacyOutbox = await request(tx(['outbox']).objectStore('outbox').getAll());
@@ -476,9 +478,14 @@
   /* ------------------------------------------------------------------ api */
 
   async function api(path, opts = {}) {
+    // Name the account this page works as: if the browser's cookie now belongs to
+    // someone else (signed in from another tab), the server refuses with
+    // ACCOUNT_MISMATCH rather than writing one account's notes into the other.
+    // /me is the call that asks whose cookie it is, so it must not be filtered.
+    const account = state.user && path !== '/api/v1/me' ? { 'X-User-Id': state.user.id } : {};
     let res;
     try {
-      res = await fetch(path, { credentials: 'same-origin', ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
+      res = await fetch(path, { credentials: 'same-origin', ...opts, headers: { 'Content-Type': 'application/json', ...account, ...(opts.headers || {}) } });
     } catch {
       // navigator.onLine is not trustworthy (it stays true behind captive portals and
       // after some reloads), so a failed fetch is the real signal that we are offline.
@@ -501,6 +508,10 @@
       if (typeof body.quota_bytes === 'number') err.quota_bytes = body.quota_bytes;
       const retryAfter = Number(res.headers.get('Retry-After'));
       if (Number.isFinite(retryAfter) && retryAfter > 0) err.retryAfterMs = retryAfter * 1000;
+      if (err.code === 'ACCOUNT_MISMATCH') {
+        sessionVerified = false;
+        void verifySession().catch(() => {}); // reloads into the cookie's account
+      }
       throw err;
     }
     return body;
@@ -539,7 +550,7 @@
   }
 
   function progressToast(title) {
-    const host = $('#toasts');
+    const host = toastHost();
     const el = document.createElement('div');
     el.className = 'toast';
     el.innerHTML = `<span class="msg"></span><progress max="100" value="0"></progress>`;
@@ -552,12 +563,19 @@
     };
   }
 
+  // Resolves true once the list is current (or attachments are off).
   async function refreshAttachments() {
-    if (!attachmentsOn() || !state.online) return;
+    if (!attachmentsOn()) return true;
+    if (!state.online || !state.user) return false;
+    const owner = state.user.id;
     try {
       const j = await api('/api/v1/attachments');
+      if (state.user?.id !== owner) return false; // signed out or switched meanwhile
       state.attachments = j.attachments || [];
-    } catch { /* offline or disabled: keep last copy */ }
+      return true;
+    } catch {
+      return false; // keep the last copy
+    }
   }
 
   const attachMeta = (id) => state.attachments.find((a) => a.id === id) || null;
@@ -589,7 +607,11 @@
   let booted = false;
 
   async function onRouteChange() {
-    if (!booted) return;
+    if (!booted) {
+      // The password-reset page skips boot entirely, so leaving it needs a real one.
+      if (state.route.view === 'reset' && readRoute().view !== 'reset') location.reload();
+      return;
+    }
     const prev = state.route;
     const next = readRoute();
     const leaving = prev.noteId && prev.noteId !== next.noteId ? prev.noteId : null;
@@ -710,7 +732,6 @@
   </aside>
   <section class="editor" id="editor" aria-label="Note Editor"></section>
 </div>
-<div class="toasts" id="toasts" aria-live="polite"></div>
 <dialog class="modal" id="modal"></dialog>`;
   }
 
@@ -2173,6 +2194,8 @@
     return Math.round(base * (0.5 + Math.random() * 0.5));
   }
 
+  const LOCK_RETRY_MS = 1000;
+
   function scheduleSync(delay = 300) {
     clearTimeout(syncTimer);
     syncTimer = setTimeout(() => void sync(), delay);
@@ -2221,19 +2244,23 @@
   async function sync() {
     if (!navigator.locks?.request) return syncUnlocked();
     return navigator.locks.request('litenotes-sync', { ifAvailable: true }, async (lock) => {
-      if (!lock) return;
+      // Another tab is syncing. It may end without telling us (a failure broadcasts
+      // nothing), so come back shortly rather than skipping this sync for good.
+      if (!lock) { scheduleSync(LOCK_RETRY_MS); return; }
       await syncUnlocked();
     });
   }
 
   async function syncUnlocked() {
     if (!state.user || !state.db || !booted) return;
+    if (sessionLost) { setSync('auth'); return; } // paused until the user signs in again
     if (!state.online) { setSync('offline'); return; }
     if (syncing) { syncQueued = true; return; }
     syncing = true;
     try {
       setSync('syncing');
       if (!(await verifySession())) return;
+      if (listsStale) refreshServerLists(); // not awaited: never hold back pushing the user's notes
       await pushOutbox();
       await pullChanges();
       await settleSyncState();
@@ -2363,6 +2390,9 @@
         await restampOutbox(batch);
         return pushOutbox(true);
       }
+      // Not a fault in these notes: the session belongs to another account now, and
+      // api() is already switching to it. The notes stay queued for their owner.
+      if (e.code === 'ACCOUNT_MISMATCH') throw e;
       // 400/409 are programming or validation faults: retrying cannot fix them.
       if (e.status === 400 || e.status === 409) {
         for (const row of batch) blockedNotes.add(row.id);
@@ -2495,19 +2525,36 @@
     state.notes[i] = { ...remote, ...enc };
   }
 
+  // Once lost, sync pauses: otherwise every save would ask /me again and stack another
+  // "Session expired" toast. It resumes on sign-in here, or when a re-check finds the
+  // cookie valid again (signed in from another tab). Re-checks run on focus, on
+  // reconnect and when another tab of this account syncs — never per save.
+  let sessionLost = false;
+  let expiredToast = null;
+
   function onSessionExpired() {
+    sessionVerified = false;
+    sessionLost = true;
     setSync('auth');
-    toast('Session expired. Your notes remain saved on this device.', {
+    if (expiredToast?.isConnected) return;
+    expiredToast = toast('Session expired. Your notes remain saved on this device.', {
       actionLabel: 'Sign in again',
       duration: 0,
-      onAction: async () => { await flushSave(); await meta('cached_user', null); state.user = null; sessionVerified = false; shellMounted = false; paint(); },
+      onAction: async () => { await flushSave(); await meta('cached_user', null); state.user = null; shellMounted = false; paint(); },
     });
+  }
+
+  function recheckSession() {
+    if (!sessionLost) return;
+    sessionLost = false; // let one sync through; another 401 pauses it again
+    scheduleSync(0);
   }
 
   /* ----------------------------------------------------------------- auth */
 
   function paintLogin() {
     shellMounted = false;
+    clearAccountToasts();
     const dev = cfg.authMode === 'dev';
     const cached = loginHint.cachedUser;
     root.innerHTML = `
@@ -2529,7 +2576,7 @@
 
     if (dev) $('#dev-login').onclick = () => void loginDev();
     else loadGoogleSignIn();
-    if (cached) $('#offline-open').onclick = async () => { state.user = cached; await bootLocal(); paint(); void resumeSession(); };
+    if (cached) $('#offline-open').onclick = async () => { state.user = cached; await bootLocal(); paint(); scheduleSync(0); };
   }
 
   const loginHint = { cachedUser: null };
@@ -2575,10 +2622,11 @@
     state.user = user;
     loginHint.cachedUser = user;
     sessionVerified = true; // the server just issued this session
+    sessionLost = false;
     await bootLocal();
     await meta('cached_user', user);
     paint();
-    void resumeSession();
+    scheduleSync(0);
   }
 
   async function confirmLogout() {
@@ -2699,10 +2747,31 @@
 
   /* --------------------------------------------------------------- toasts */
 
-  function toast(message, { actionLabel, onAction, duration = 5000 } = {}) {
-    const host = $('#toasts') || document.body.appendChild(Object.assign(document.createElement('div'), { className: 'toasts', id: 'toasts' }));
+  // One container for every toast, outside #app: toasts can appear before the shell
+  // exists (an update offered while booting or on the sign-in screen), and replacing
+  // #app must neither drop them nor stack a second container on top.
+  function toastHost() {
+    let host = $('#toasts');
+    if (!host) {
+      host = Object.assign(document.createElement('div'), { className: 'toasts', id: 'toasts' });
+      host.setAttribute('aria-live', 'polite');
+      document.body.appendChild(host);
+    }
+    return host;
+  }
+
+  // Toasts belong to the signed-in account unless marked global (the update offer).
+  // Leaving the notes for the sign-in card drops the account's toasts, as replacing
+  // the shell did while toasts still lived inside it.
+  function clearAccountToasts() {
+    for (const el of [...toastHost().children]) if (!el.dataset.global) el.remove();
+  }
+
+  function toast(message, { actionLabel, onAction, duration = 5000, global = false } = {}) {
+    const host = toastHost();
     const el = document.createElement('div');
     el.className = 'toast';
+    if (global) el.dataset.global = '1';
     el.innerHTML = `<span class="msg">${esc(message)}</span>`;
     const remove = () => { clearTimeout(timer); el.remove(); };
     if (actionLabel) {
@@ -2724,6 +2793,7 @@
     while (host.children.length >= 3) host.firstElementChild.remove();
     host.appendChild(el);
     const timer = duration ? setTimeout(remove, duration) : null;
+    return el;
   }
 
   /* ---------------------------------------------------------------- theme */
@@ -2895,20 +2965,32 @@
       if (!reloading) return;
       location.reload();
     });
-    navigator.serviceWorker.register('/sw.js?v=65').then((reg) => {
-      reg.addEventListener('updatefound', () => {
-        const worker = reg.installing;
-        if (!worker) return;
-        worker.addEventListener('statechange', () => {
-          if (worker.state !== 'installed' || !navigator.serviceWorker.controller) return;
-          // Never swap the app out from under an open editor (PRD 12.2).
-          toast('A new version of io-notes is available', {
-            actionLabel: 'Reload',
-            duration: 0,
-            onAction: async () => { await flushSave(); reloading = true; worker.postMessage({ type: 'skip-waiting' }); },
-          });
-        });
+    let registration = null;
+    let offered = null;
+    const offer = (worker) => {
+      if (offered === worker || !navigator.serviceWorker.controller) return;
+      offered = worker;
+      // Never swap the app out from under an open editor (PRD 12.2). A newer deploy
+      // can replace the offered worker before the click, so wake whichever waits now.
+      toast('A new version of io-notes is available', {
+        actionLabel: 'Reload',
+        duration: 0,
+        global: true,
+        onAction: async () => { await flushSave(); reloading = true; (registration?.waiting || worker).postMessage({ type: 'skip-waiting' }); },
       });
+    };
+    const offerWhenInstalled = (worker) => {
+      if (worker.state === 'installed') { offer(worker); return; }
+      worker.addEventListener('statechange', () => { if (worker.state === 'installed') offer(worker); });
+    };
+    navigator.serviceWorker.register('/sw.js?v=65').then((reg) => {
+      registration = reg;
+      // An update found before this page got here (another tab saw it and the toast
+      // was dismissed, or it installed while booting) fires no updatefound for us.
+      // Offer it anyway: the shell comes from cache, so this is the only way in.
+      if (reg.waiting) offer(reg.waiting);
+      else if (reg.installing) offerWhenInstalled(reg.installing);
+      reg.addEventListener('updatefound', () => { if (reg.installing) offerWhenInstalled(reg.installing); });
     }).catch(() => {});
     navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.type === 'io-notes-sync') scheduleSync(0); });
   }
@@ -2947,7 +3029,7 @@
   /* ----------------------------------------------------------------- boot */
 
   // IndexedDB only: a returning user is painted without touching the network.
-  // Server-side lists catch up afterwards in resumeSession().
+  // Server-side lists catch up on the first sync that confirms the session.
   async function bootLocal() {
     await migrateLegacyForUser();
     state.notes = (await notesAll()).map((n) => ({ ...n }));
@@ -2955,15 +3037,45 @@
     if (!state.deviceId) { state.deviceId = uid(); await meta('device_id', state.deviceId); }
     state.clockOffset = Number(await meta('clock_offset_ms')) || 0;
     state.folders = (await meta('folders')) || [];
+    listsStale = true;
+    listsRetryAt = 0;
+    listsRefreshing = null; // a refresh still in flight belongs to the previous account
   }
 
+  // Folders and attachment metadata live on the server. They are refreshed by the
+  // first sync after /me succeeds — not only at launch, where a failed /me would
+  // otherwise leave them stale for the rest of the session.
+  let listsStale = true;
+  // A list endpoint that keeps failing is retried at this pace, not on every save.
+  const LIST_RETRY_MS = 5000;
+  let listsRetryAt = 0;
+  let listsRefreshing = null;
+
   async function refreshFolders() {
-    if (!state.online) return;
+    if (!state.online || !state.user) return false;
+    const owner = state.user.id;
     try {
       const j = await api('/api/v1/folders');
+      if (state.user?.id !== owner) return false; // signed out or switched meanwhile
       state.folders = j.folders || [];
       await meta('folders', state.folders); // folders must survive offline too
-    } catch { /* keep the cached copy */ }
+      return true;
+    } catch {
+      return false; // keep the cached copy
+    }
+  }
+
+  function refreshServerLists() {
+    if (listsRefreshing || Date.now() < listsRetryAt) return;
+    const owner = state.user.id;
+    const run = Promise.all([refreshFolders(), refreshAttachments()]).then(([foldersOk, attachmentsOk]) => {
+      if (state.user?.id !== owner) return;
+      if (foldersOk && attachmentsOk) listsStale = false;
+      else listsRetryAt = Date.now() + LIST_RETRY_MS;
+      paint();
+      rerenderOverlay();
+    }).finally(() => { if (listsRefreshing === run) listsRefreshing = null; });
+    listsRefreshing = run;
   }
 
   let sessionVerified = false;
@@ -2975,35 +3087,50 @@
     if (sessionVerified) return true;
     const me = (await api('/api/v1/me')).user;
     if (me.id !== state.user.id) {
-      await flushSave();
-      await meta('cached_user', me);
-      location.reload();
+      await switchAccount(me);
       return false;
     }
     state.user = me;
     loginHint.cachedUser = me;
     await meta('cached_user', me);
     sessionVerified = true;
+    expiredToast?.remove(); // the session came back
     return true;
   }
 
-  // Everything the first paint did not wait for. Offline or a server error keeps
-  // the cached copy on screen; the sync loop retries /me with its own backoff.
-  async function resumeSession() {
+  const SWITCH_NOTICE = 'io-notes-account-switch';
+
+  // The browser's session belongs to `me` now (signed in elsewhere in this browser).
+  // Reload into that account. The old account's unsynced changes stay on this
+  // device, scoped to it, until it signs in again — and the user is told so.
+  async function switchAccount(me) {
+    await flushSave();
+    const pending = (await outboxAll()).length;
     try {
-      if (!(await verifySession())) return;
-      await refreshFolders();
-      await refreshAttachments();
-      paint();
-      rerenderOverlay();
-    } catch (e) {
-      if (e.status === 401) { onSessionExpired(); return; }
-    }
-    scheduleSync(0);
+      sessionStorage.setItem(SWITCH_NOTICE, JSON.stringify({ from: state.user.email, to: me.email, pending }));
+    } catch { /* the notice is best-effort */ }
+    await meta('cached_user', me);
+    location.reload();
+  }
+
+  function showSwitchNotice() {
+    let notice = null;
+    try {
+      notice = JSON.parse(sessionStorage.getItem(SWITCH_NOTICE) || 'null');
+      sessionStorage.removeItem(SWITCH_NOTICE);
+    } catch { return; }
+    if (!notice) return;
+    const n = notice.pending;
+    const kept = n ? ` ${n} unsynced change${n === 1 ? '' : 's'} from ${notice.from} ${n === 1 ? 'stays' : 'stay'} on this device until that account signs in again.` : '';
+    toast(`Signed in as ${notice.to}.${kept}`, { duration: n ? 0 : 5000 });
   }
 
   async function start() {
     applyTheme(currentTheme());
+    // First, so a waiting update is still offered when boot below fails or never
+    // runs (password-reset page, broken storage): the shell is served from cache,
+    // and this is the only way a fixed version reaches the user.
+    setupServiceWorker();
 
     if (!location.hash) location.replace('#/notes');
     state.route = readRoute();
@@ -3020,7 +3147,7 @@
     const cached = await meta('cached_user');
     loginHint.cachedUser = cached || null;
 
-    // A returning user opens straight into their notes; resumeSession() checks the
+    // A returning user opens straight into their notes; the first sync checks the
     // session in the background. Only a browser with no cached account waits for
     // the server before deciding between notes and the login card.
     if (cached) {
@@ -3033,10 +3160,8 @@
       } catch { /* 401 or offline: the login card */ }
     }
 
-    if (state.user) {
-      await bootLocal();
-      await meta('cached_user', state.user);
-    }
+    if (state.user) await bootLocal();
+    if (sessionVerified) await meta('cached_user', state.user);
 
     // Resolve a deep link to a note that no longer exists.
     if (state.route.noteId && !state.notes.some((n) => n.id === state.route.noteId)) navigate(state.route.view, null, true);
@@ -3045,23 +3170,25 @@
     booted = true;
     paint();
     setSync(state.online ? 'local' : 'offline');
-    if (state.user) void resumeSession();
+    if (state.user) scheduleSync(0);
+    showSwitchNotice();
 
     setupInstall();
-    setupServiceWorker();
     setupShortcuts();
   }
 
   window.addEventListener('hashchange', () => void onRouteChange());
-  window.addEventListener('online', () => { state.online = true; scheduleSync(0); void refreshAttachments().then(rerenderOverlay); });
+  window.addEventListener('online', () => { state.online = true; recheckSession(); scheduleSync(0); void refreshAttachments().then(rerenderOverlay); });
   window.addEventListener('offline', () => { state.online = false; setSync('offline'); rerenderOverlay(); });
   window.addEventListener('io-notes-sync', () => scheduleSync(0));
   tabChannel?.addEventListener('message', (e) => {
-    if (e.data?.userId === state.user?.id && (e.data.type === 'local-change' || e.data.type === 'sync-complete')) scheduleSync(0);
+    if (e.data?.userId !== state.user?.id) return;
+    if (e.data.type === 'sync-complete') recheckSession(); // that tab's cookie works
+    if (e.data.type === 'local-change' || e.data.type === 'sync-complete') scheduleSync(0);
   });
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') void flushSave();
-      else if (state.user) { paintList(); scheduleSync(400); }
+      else if (state.user) { paintList(); recheckSession(); scheduleSync(400); }
     });
     window.addEventListener('pagehide', () => { void flushSave(); });
     window.addEventListener('resize', () => {

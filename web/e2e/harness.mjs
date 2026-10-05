@@ -40,24 +40,41 @@ export async function startApp() {
   const proxyPort = await freePort();
   const base = `http://127.0.0.1:${proxyPort}`;
 
-  const server = spawn(bin, [], {
-    env: {
-      ...process.env,
-      AUTH_MODE: 'dev',
-      APP_ENV: 'development',
-      APP_ORIGIN: base,
-      SESSION_SECRET: 'e2e-session-secret-at-least-32-chars',
-      TURSO_DATABASE_URL: 'file:' + path.join(dir, 'e2e.db'),
-      ATTACH_LOCAL_DIR: path.join(dir, 'attachments'),
-      PORT: String(serverPort),
-    },
-    stdio: 'ignore',
-  });
+  const baseEnv = {
+    ...process.env,
+    AUTH_MODE: 'dev',
+    APP_ENV: 'development',
+    APP_ORIGIN: base,
+    SESSION_SECRET: 'e2e-session-secret-at-least-32-chars',
+    TURSO_DATABASE_URL: 'file:' + path.join(dir, 'e2e.db'),
+    ATTACH_LOCAL_DIR: path.join(dir, 'attachments'),
+    PORT: String(serverPort),
+  };
+  let server;
+  async function startServer(extraEnv = {}) {
+    server = spawn(bin, [], { env: { ...baseEnv, ...extraEnv }, stdio: 'ignore' });
+    await waitForHealthy(base);
+  }
+  async function stopServer() {
+    if (server.exitCode !== null || server.signalCode !== null) return; // already gone
+    const exited = new Promise((r) => server.once('exit', r));
+    server.kill();
+    await exited;
+  }
 
   // pathname -> milliseconds to hold the request before forwarding it.
   const delays = new Map();
+  // pathname -> how many more requests get a 503 instead of reaching the server.
+  const failures = new Map();
   const proxy = http.createServer((req, res) => {
     const { pathname } = new URL(req.url, base);
+    const failLeft = failures.get(pathname) || 0;
+    if (failLeft > 0) {
+      failures.set(pathname, failLeft - 1);
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { code: 'DATABASE_UNAVAILABLE', message: 'injected by e2e proxy' } }));
+      return;
+    }
     setTimeout(() => {
       const upstream = http.request(
         { host: '127.0.0.1', port: serverPort, path: req.url, method: req.method, headers: req.headers },
@@ -68,7 +85,7 @@ export async function startApp() {
     }, delays.get(pathname) || 0);
   });
   await new Promise((r) => proxy.listen(proxyPort, '127.0.0.1', r));
-  await waitForHealthy(base);
+  await startServer();
 
   // Full Chromium in new headless mode: closest to the browsers people use.
   const browser = await chromium.launch({ channel: 'chromium' });
@@ -76,6 +93,12 @@ export async function startApp() {
   return {
     base,
     delays,
+    failures,
+    // Same database, new process: how a deploy or a config change looks to clients.
+    async restart(extraEnv = {}) {
+      await stopServer();
+      await startServer(extraEnv);
+    },
     async newContext() {
       const ctx = await browser.newContext();
       await ctx.addInitScript(recordScreens);
@@ -83,18 +106,32 @@ export async function startApp() {
     },
     async stop() {
       await browser.close();
-      server.kill();
+      await stopServer();
       await new Promise((r) => proxy.close(r));
       rmSync(dir, { recursive: true, force: true });
     },
   };
 }
 
-// Runs in the page before any app script: logs each top-level screen #app shows.
+// Runs in the page before any app script: logs each top-level screen #app shows,
+// and the text of every toast. Toasts go to this tab's sessionStorage, so one shown
+// right before the app reloads itself is still on record afterwards.
 function recordScreens() {
   const screens = [];
   /** @type {any} */ (window).__screens = screens;
-  new MutationObserver(() => {
+  const keepToast = (text) => {
+    try {
+      const all = JSON.parse(sessionStorage.getItem('__e2e_toasts') || '[]');
+      all.push(text);
+      sessionStorage.setItem('__e2e_toasts', JSON.stringify(all));
+    } catch { /* storage unavailable: nothing to record into */ }
+  };
+  new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      for (const n of m.addedNodes) {
+        if (n instanceof Element && n.classList.contains('toast')) keepToast(n.textContent);
+      }
+    }
     const app = document.getElementById('app');
     if (!app) return;
     const s = app.querySelector('.login-card') ? 'login' : app.querySelector('#shell') ? 'notes' : app.querySelector('.loading') ? 'spinner' : null;
@@ -106,6 +143,28 @@ export async function signIn(ctx, base, email) {
   const res = await ctx.request.post(base + '/api/v1/auth/dev', { data: { email, name: email.split('@')[0] } });
   if (!res.ok()) throw new Error(`dev sign-in failed: HTTP ${res.status()}`);
   return (await res.json()).user;
+}
+
+// Fresh browser storage and a fresh account, already past the first visit.
+export async function returningUser(app, email) {
+  const ctx = await app.newContext();
+  await signIn(ctx, app.base, email);
+  const page = await ctx.newPage();
+  await firstVisit(page, app.base);
+  return { ctx, page };
+}
+
+// Creates a note through the UI and waits until it is saved on the device.
+export async function saveNewNote(page, content) {
+  await page.locator('[data-act="new"]:visible').first().click();
+  await page.fill('#content', content);
+  await page.keyboard.press('Control+s');
+  await page.locator('#toasts').getByText('Saved', { exact: true }).waitFor();
+}
+
+export async function pulledContents(ctx, base) {
+  const res = await ctx.request.get(base + '/api/v1/sync/pull?cursor=0');
+  return (await res.json()).notes.map((n) => n.content);
 }
 
 // First visit on this browser: boots from the server, caches the account in
@@ -127,3 +186,6 @@ export async function openApp(page, url) {
 }
 
 export const screensSeen = (page) => page.evaluate(() => /** @type {any} */ (window).__screens);
+
+// Every toast this tab has shown, across reloads.
+export const toastsSeen = (page) => page.evaluate(() => JSON.parse(sessionStorage.getItem('__e2e_toasts') || '[]'));

@@ -20,7 +20,7 @@ func newTestApp(t *testing.T) *application {
 	t.Helper()
 	cfg := config{
 		Port: "0", AppOrigin: "http://127.0.0.1:8091", AppEnv: "test", AuthMode: "dev",
-		SessionSecret: "test-secret-that-is-long-enough-32", SessionTTL: time.Hour,
+		SessionSecret: "test-secret-that-is-long-enough-32", SessionTTL: time.Hour, SessionMaxAge: 90 * 24 * time.Hour,
 		DatabaseURL: "file:" + filepath.Join(t.TempDir(), "test.db"),
 	}
 	db, err := openDB(cfg)
@@ -80,6 +80,48 @@ func TestValidateDatabaseConfig(t *testing.T) {
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+// A zero or negative session lifetime would make setSession issue nothing, so every
+// login would silently fail; it has to be refused at startup instead.
+func TestLoadConfigSessionLifetimes(t *testing.T) {
+	cases := []struct {
+		name       string
+		env        map[string]string
+		wantMaxAge time.Duration
+		wantErr    bool
+	}{
+		{name: "default max age is 90 days", env: map[string]string{}, wantMaxAge: 90 * 24 * time.Hour},
+		{name: "max age from env", env: map[string]string{"SESSION_MAX_AGE": "720h"}, wantMaxAge: 720 * time.Hour},
+		{name: "unparsable max age", env: map[string]string{"SESSION_MAX_AGE": "90 days"}, wantErr: true},
+		{name: "zero max age", env: map[string]string{"SESSION_MAX_AGE": "0s"}, wantErr: true},
+		{name: "negative max age", env: map[string]string{"SESSION_MAX_AGE": "-1h"}, wantErr: true},
+		{name: "zero TTL", env: map[string]string{"SESSION_TTL": "0s"}, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			base := map[string]string{"APP_ENV": "development", "AUTH_MODE": "dev", "TURSO_DATABASE_URL": "file:" + filepath.Join(t.TempDir(), "c.db"), "SESSION_TTL": "", "SESSION_MAX_AGE": "", "R2_ACCOUNT_ID": "", "R2_ACCESS_KEY_ID": "", "R2_SECRET_ACCESS_KEY": "", "R2_BUCKET": "", "ATTACH_LOCAL_DIR": ""}
+			for k, v := range tc.env {
+				base[k] = v
+			}
+			for k, v := range base {
+				t.Setenv(k, v)
+			}
+			c, err := loadConfig()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("accepted; SessionTTL=%v SessionMaxAge=%v", c.SessionTTL, c.SessionMaxAge)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadConfig: %v", err)
+			}
+			if c.SessionMaxAge != tc.wantMaxAge {
+				t.Fatalf("SessionMaxAge = %v, want %v", c.SessionMaxAge, tc.wantMaxAge)
 			}
 		})
 	}
@@ -147,9 +189,8 @@ func (a *application) mustUser(t *testing.T, sub, email string) user {
 	return u
 }
 
-// do issues an authenticated request through the full router.
-func (a *application) do(t *testing.T, u user, method, path string, body any) *httptest.ResponseRecorder {
-	t.Helper()
+// authedRequest builds a request carrying a fresh session for u (none if u.ID is empty).
+func (a *application) authedRequest(u user, method, path string, body any) *http.Request {
 	var payload io.Reader
 	if body != nil {
 		payload = strings.NewReader(string(mustJSON(body)))
@@ -160,8 +201,14 @@ func (a *application) do(t *testing.T, u user, method, path string, body any) *h
 		claims := jwtClaims{Subject: u.ID, Issuer: "litenotes", Audience: "litenotes-web", IssuedAt: time.Now().Unix(), ExpiresAt: time.Now().Add(time.Hour).Unix()}
 		r.AddCookie(&http.Cookie{Name: cookieName(a.cfg), Value: signJWT(claims, a.cfg.SessionSecret)})
 	}
+	return r
+}
+
+// do issues an authenticated request through the full router.
+func (a *application) do(t *testing.T, u user, method, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
 	w := httptest.NewRecorder()
-	a.routes().ServeHTTP(w, r)
+	a.routes().ServeHTTP(w, a.authedRequest(u, method, path, body))
 	return w
 }
 
@@ -439,6 +486,40 @@ func TestCSPCoversInlineScripts(t *testing.T) {
 	}
 }
 
+// The service worker answers navigations and config.js from its cache, so what the
+// server puts in them — the CSP sent with index.html, the config.js values — has to
+// change sw.js too. Otherwise an installed browser never updates and keeps the old
+// CSP (blocking a new R2 endpoint) and the old config.
+func TestServiceWorkerChangesWithWhatItCaches(t *testing.T) {
+	base := config{AppOrigin: "https://notes.example", AuthMode: "google", GoogleClientID: "client-a", AttachMaxBytes: 10 << 20, AttachUserQuotaBytes: 512 << 20}
+	swFor := func(cfg config) string {
+		a := newApplication(cfg, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), nil)
+		w := httptest.NewRecorder()
+		a.routes().ServeHTTP(w, httptest.NewRequest("GET", "/sw.js", nil))
+		if w.Code != 200 {
+			t.Fatalf("GET /sw.js: status %d", w.Code)
+		}
+		return w.Body.String()
+	}
+	original := swFor(base)
+	if swFor(base) != original {
+		t.Fatal("sw.js differs between two identical servers; every restart would force an update")
+	}
+	changes := map[string]func(*config){
+		"R2 account (CSP connect-src)":  func(c *config) { c.R2AccountID = "acct" },
+		"Google client id (config.js)":  func(c *config) { c.GoogleClientID = "client-b" },
+		"upload size limit (config.js)": func(c *config) { c.AttachMaxBytes = 1 << 20 },
+		"auth mode (config.js)":         func(c *config) { c.AuthMode = "dev" },
+	}
+	for name, change := range changes {
+		c := base
+		change(&c)
+		if swFor(c) == original {
+			t.Errorf("changing the %s leaves sw.js unchanged", name)
+		}
+	}
+}
+
 func TestRouteTemplateStripsIdentifiers(t *testing.T) {
 	got := routeTemplate("/api/v1/notes/3f2504e0-4f89-41d3-9a0c-0305e82c3301/password")
 	if got != "/api/v1/notes/{id}/password" {
@@ -665,6 +746,60 @@ func TestAuthUnknownUserIsUnauthenticated(t *testing.T) {
 	}
 }
 
+// The client names the account it is working as. A cookie that belongs to another
+// account (switched in another tab) must be refused, never written into.
+func TestAuthRejectsSessionOfAnotherAccount(t *testing.T) {
+	a := newTestApp(t)
+	owner := a.mustUser(t, "sub-owner", "owner@example.com")
+	other := a.mustUser(t, "sub-other", "other@example.com")
+	cases := []struct {
+		name     string
+		expected string
+		want     int
+	}{
+		{name: "no expectation (older clients)", expected: "", want: 200},
+		{name: "same account", expected: owner.ID, want: 200},
+		{name: "another account", expected: other.ID, want: 409},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := a.authedRequest(owner, "GET", "/api/v1/folders", nil)
+			if tc.expected != "" {
+				r.Header.Set("X-User-Id", tc.expected)
+			}
+			w := httptest.NewRecorder()
+			a.routes().ServeHTTP(w, r)
+			if w.Code != tc.want {
+				t.Fatalf("status = %d, want %d", w.Code, tc.want)
+			}
+			if tc.want == 409 && !strings.Contains(w.Body.String(), "ACCOUNT_MISMATCH") {
+				t.Fatalf("body = %s, want error code ACCOUNT_MISMATCH", w.Body.String())
+			}
+		})
+	}
+}
+
+// meWithSession calls /me with a cookie holding claims and returns the status plus
+// the claims of a renewed session cookie, if the server issued one.
+func meWithSession(t *testing.T, a *application, claims jwtClaims) (int, *jwtClaims) {
+	t.Helper()
+	r := httptest.NewRequest("GET", "/api/v1/me", nil)
+	r.AddCookie(&http.Cookie{Name: cookieName(a.cfg), Value: signJWT(claims, a.cfg.SessionSecret)})
+	w := httptest.NewRecorder()
+	a.routes().ServeHTTP(w, r)
+	for _, c := range w.Result().Cookies() {
+		if c.Name != cookieName(a.cfg) {
+			continue
+		}
+		got, err := verifyJWT(c.Value, a.cfg.SessionSecret)
+		if err != nil {
+			t.Fatalf("renewed token does not verify: %v", err)
+		}
+		return w.Code, &got
+	}
+	return w.Code, nil
+}
+
 // Sessions slide: an account in use keeps its session, so an active user is never
 // sent back to the login screen just because the first sign-in was 30 days ago.
 func TestSessionRenewal(t *testing.T) {
@@ -682,18 +817,9 @@ func TestSessionRenewal(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			claims := jwtClaims{Subject: u.ID, Issuer: "litenotes", Audience: "litenotes-web", IssuedAt: tc.issuedAt.Unix(), ExpiresAt: now.Add(30 * time.Minute).Unix()}
-			r := httptest.NewRequest("GET", "/api/v1/me", nil)
-			r.AddCookie(&http.Cookie{Name: cookieName(a.cfg), Value: signJWT(claims, a.cfg.SessionSecret)})
-			w := httptest.NewRecorder()
-			a.routes().ServeHTTP(w, r)
-			if w.Code != 200 {
-				t.Fatalf("status = %d, want 200", w.Code)
-			}
-			var renewed *http.Cookie
-			for _, c := range w.Result().Cookies() {
-				if c.Name == cookieName(a.cfg) {
-					renewed = c
-				}
+			status, renewed := meWithSession(t, a, claims)
+			if status != 200 {
+				t.Fatalf("status = %d, want 200", status)
 			}
 			if !tc.wantRenew {
 				if renewed != nil {
@@ -704,19 +830,87 @@ func TestSessionRenewal(t *testing.T) {
 			if renewed == nil {
 				t.Fatal("a session older than a day was not renewed")
 			}
-			got, err := verifyJWT(renewed.Value, a.cfg.SessionSecret)
-			if err != nil {
-				t.Fatalf("renewed token does not verify: %v", err)
-			}
-			if got.Subject != u.ID {
-				t.Fatalf("renewed token subject = %q, want %q", got.Subject, u.ID)
+			if renewed.Subject != u.ID {
+				t.Fatalf("renewed token subject = %q, want %q", renewed.Subject, u.ID)
 			}
 			// The old token had 30 minutes left; a renewal restarts the full one-hour TTL.
-			if got.ExpiresAt < now.Add(55*time.Minute).Unix() {
-				t.Fatalf("renewed token expires in %v, want a full TTL", time.Until(time.Unix(got.ExpiresAt, 0)).Round(time.Minute))
+			if renewed.ExpiresAt < now.Add(55*time.Minute).Unix() {
+				t.Fatalf("renewed token expires in %v, want a full TTL", time.Until(time.Unix(renewed.ExpiresAt, 0)).Round(time.Minute))
 			}
 		})
 	}
+}
+
+// Sliding stops at SessionMaxAge after the real sign-in: a stolen cookie cannot be
+// kept alive forever by using it, and Google sign-in is asked for again eventually.
+func TestSessionMaxAge(t *testing.T) {
+	a := newTestApp(t)
+	a.cfg.SessionTTL = 30 * 24 * time.Hour
+	a.cfg.SessionMaxAge = 90 * 24 * time.Hour
+	u := a.mustUser(t, "sub-maxage", "maxage@example.com")
+	now := time.Now()
+	day := 24 * time.Hour
+	session := func(signedIn time.Time, issued time.Time, expires time.Time) jwtClaims {
+		c := jwtClaims{Subject: u.ID, Issuer: "litenotes", Audience: "litenotes-web", IssuedAt: issued.Unix(), ExpiresAt: expires.Unix()}
+		if !signedIn.IsZero() {
+			c.AuthTime = signedIn.Unix()
+		}
+		return c
+	}
+
+	t.Run("renewal keeps the original sign-in time", func(t *testing.T) {
+		signedIn := now.Add(-10 * day)
+		_, renewed := meWithSession(t, a, session(signedIn, now.Add(-2*day), now.Add(28*day)))
+		if renewed == nil {
+			t.Fatal("session was not renewed")
+		}
+		if renewed.AuthTime != signedIn.Unix() {
+			t.Fatalf("auth_time = %v, want the original sign-in %v", time.Unix(renewed.AuthTime, 0), signedIn)
+		}
+		if renewed.ExpiresAt < now.Add(30*day-time.Minute).Unix() {
+			t.Fatalf("renewed session expires in %v, want a full 30-day TTL", time.Until(time.Unix(renewed.ExpiresAt, 0)).Round(time.Hour))
+		}
+	})
+	t.Run("renewal never reaches past the maximum age", func(t *testing.T) {
+		signedIn := now.Add(-75 * day)
+		_, renewed := meWithSession(t, a, session(signedIn, now.Add(-2*day), now.Add(28*day)))
+		if renewed == nil {
+			t.Fatal("session was not renewed")
+		}
+		if limit := signedIn.Add(90 * day).Unix(); renewed.ExpiresAt > limit {
+			t.Fatalf("renewed session expires %v after the 90-day limit", time.Duration(renewed.ExpiresAt-limit)*time.Second)
+		}
+	})
+	// SESSION_MAX_AGE is a hard limit: lowering it must sign out sessions that are
+	// already older, not only stop renewing them (e.g. after a suspected cookie theft).
+	t.Run("a session past its maximum age is refused", func(t *testing.T) {
+		status, renewed := meWithSession(t, a, session(now.Add(-91*day), now.Add(-2*day), now.Add(day)))
+		if status != 401 {
+			t.Fatalf("status = %d, want 401 for a session signed in 91 days ago", status)
+		}
+		if renewed != nil {
+			t.Fatalf("a session past its maximum age was renewed until %v", time.Unix(renewed.ExpiresAt, 0))
+		}
+	})
+	// Called directly: tokens carry whole seconds, so only setSession sees the
+	// sub-second remainder this is about.
+	t.Run("a session with under a second left gets no cookie", func(t *testing.T) {
+		w := httptest.NewRecorder()
+		a.setSession(w, u, time.Now().Add(-90*day+500*time.Millisecond))
+		if cookies := w.Result().Cookies(); len(cookies) != 0 {
+			t.Fatalf("issued %q with Max-Age %d; Max-Age 0 makes it a browser-session cookie holding a dead token", cookies[0].Name, cookies[0].MaxAge)
+		}
+	})
+	t.Run("sessions issued before auth_time existed count from their issue time", func(t *testing.T) {
+		issued := now.Add(-2 * day)
+		_, renewed := meWithSession(t, a, session(time.Time{}, issued, now.Add(28*day)))
+		if renewed == nil {
+			t.Fatal("session was not renewed")
+		}
+		if renewed.AuthTime != issued.Unix() {
+			t.Fatalf("auth_time = %v, want the old token's issue time %v", time.Unix(renewed.AuthTime, 0), issued)
+		}
+	})
 }
 
 // Regression: deleting a folder detaches notes, and that detach has to be pullable.

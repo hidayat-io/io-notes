@@ -42,7 +42,7 @@ var schema embed.FS
 type config struct {
 	Port, AppOrigin, AppEnv, AuthMode, GoogleClientID, SessionSecret, DatabaseURL, TursoToken        string
 	ListenHost, ClientIPHeader                                                                       string
-	SessionTTL                                                                                       time.Duration
+	SessionTTL, SessionMaxAge                                                                        time.Duration
 	BrevoAPIKey, ResetEmailFrom, ResetEmailFromName, ResetSMTPAddr, ResetSMTPUser, ResetSMTPPassword string
 	R2AccountID, R2AccessKeyID, R2SecretAccessKey, R2Bucket, AttachLocalDir                          string
 	AttachMaxBytes, AttachUserQuotaBytes, AttachGlobalCapBytes                                       int64
@@ -155,13 +155,25 @@ func main() {
 }
 
 func loadConfig() (config, error) {
-	c := config{Port: getenv("PORT", "8091"), AppOrigin: getenv("APP_ORIGIN", "http://localhost:8091"), AppEnv: getenv("APP_ENV", "development"), AuthMode: getenv("AUTH_MODE", "google"), GoogleClientID: os.Getenv("GOOGLE_CLIENT_ID"), SessionSecret: os.Getenv("SESSION_SECRET"), DatabaseURL: getenv("TURSO_DATABASE_URL", "file:./data/litenotes.db"), TursoToken: os.Getenv("TURSO_AUTH_TOKEN"), SessionTTL: 30 * 24 * time.Hour, BrevoAPIKey: os.Getenv("BREVO_API_KEY"), ResetEmailFrom: getenv("RESET_EMAIL_FROM", "admin@indoomega.my.id"), ResetEmailFromName: getenv("RESET_EMAIL_FROM_NAME", "LiteNotes"), ResetSMTPAddr: os.Getenv("RESET_SMTP_ADDR"), ResetSMTPUser: os.Getenv("RESET_SMTP_USER"), ResetSMTPPassword: os.Getenv("RESET_SMTP_PASSWORD")}
+	c := config{Port: getenv("PORT", "8091"), AppOrigin: getenv("APP_ORIGIN", "http://localhost:8091"), AppEnv: getenv("APP_ENV", "development"), AuthMode: getenv("AUTH_MODE", "google"), GoogleClientID: os.Getenv("GOOGLE_CLIENT_ID"), SessionSecret: os.Getenv("SESSION_SECRET"), DatabaseURL: getenv("TURSO_DATABASE_URL", "file:./data/litenotes.db"), TursoToken: os.Getenv("TURSO_AUTH_TOKEN"), SessionTTL: 30 * 24 * time.Hour, SessionMaxAge: 90 * 24 * time.Hour, BrevoAPIKey: os.Getenv("BREVO_API_KEY"), ResetEmailFrom: getenv("RESET_EMAIL_FROM", "admin@indoomega.my.id"), ResetEmailFromName: getenv("RESET_EMAIL_FROM_NAME", "LiteNotes"), ResetSMTPAddr: os.Getenv("RESET_SMTP_ADDR"), ResetSMTPUser: os.Getenv("RESET_SMTP_USER"), ResetSMTPPassword: os.Getenv("RESET_SMTP_PASSWORD")}
 	if raw := os.Getenv("SESSION_TTL"); raw != "" {
 		d, err := time.ParseDuration(raw)
 		if err != nil {
 			return c, fmt.Errorf("SESSION_TTL: %w", err)
 		}
 		c.SessionTTL = d
+	}
+	if raw := os.Getenv("SESSION_MAX_AGE"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return c, fmt.Errorf("SESSION_MAX_AGE: %w", err)
+		}
+		c.SessionMaxAge = d
+	}
+	// A non-positive lifetime makes setSession issue nothing: every login would fail
+	// without an error anywhere.
+	if c.SessionTTL <= 0 || c.SessionMaxAge <= 0 {
+		return c, errors.New("SESSION_TTL and SESSION_MAX_AGE must be positive durations")
 	}
 	if c.AppEnv == "production" && len(c.SessionSecret) < 32 {
 		return c, errors.New("SESSION_SECRET must be at least 32 characters in production")
@@ -406,6 +418,7 @@ type application struct {
 	db            *sql.DB
 	logger        *slog.Logger
 	csp           string
+	swJS          []byte
 	store         objectStore
 	attachEnabled bool
 
@@ -420,7 +433,7 @@ type application struct {
 // main and the tests need, so neither can drift from the other.
 func newApplication(cfg config, db *sql.DB, logger *slog.Logger, store objectStore) *application {
 	indexHTML, _ := readEmbeddedIndex()
-	return &application{
+	a := &application{
 		cfg:           cfg,
 		db:            db,
 		logger:        logger,
@@ -433,6 +446,20 @@ func newApplication(cfg config, db *sql.DB, logger *slog.Logger, store objectSto
 		uploadLimit:   newLimiter(10, 20),
 		downloadLimit: newLimiter(60, 90),
 	}
+	// The local view of config.js keeps AUTH_MODE as configured, so a dev/google
+	// switch changes the fingerprint too.
+	a.swJS = serviceWorkerJS(a.csp, a.clientConfig(true))
+	return a
+}
+
+// serviceWorkerJS is the embedded worker plus a fingerprint of what it caches but
+// the server decides: the CSP sent with index.html and the config.js values. The
+// worker serves both from its cache, so changing either must change sw.js — that
+// byte change is the only way an installed browser learns to update.
+func serviceWorkerJS(csp string, clientConfig map[string]string) []byte {
+	src, _ := webassets.Dist.ReadFile("dist/sw.js")
+	sum := sha256.Sum256([]byte(csp + "\n" + string(mustJSON(clientConfig))))
+	return append(append([]byte{}, src...), fmt.Sprintf("\n// server-config: %x\n", sum[:8])...)
 }
 
 func (a *application) routes() http.Handler {
@@ -477,6 +504,12 @@ func (a *application) staticFallback(api http.Handler) http.Handler {
 			return
 		}
 		path := r.URL.Path
+		if path == "/sw.js" {
+			w.Header().Set("Content-Type", contentType(path))
+			w.Header().Set("Cache-Control", "no-cache")
+			_, _ = w.Write(a.swJS)
+			return
+		}
 		if path == "/" || strings.HasPrefix(path, "/#") {
 			path = "/index.html"
 		}
@@ -491,7 +524,7 @@ func (a *application) staticFallback(api http.Handler) http.Handler {
 			return
 		}
 		w.Header().Set("Content-Type", contentType(path))
-		if path == "/sw.js" || path == "/index.html" {
+		if path == "/index.html" {
 			w.Header().Set("Cache-Control", "no-cache")
 		} else if strings.Contains(path, ".") {
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
@@ -538,17 +571,23 @@ func (a *application) security(next http.Handler) http.Handler {
 func (a *application) configJS(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/javascript")
 	w.Header().Set("Cache-Control", "no-store")
+	fmt.Fprintf(w, "window.__LITENOTES_CONFIG__=%s;", mustJSON(a.clientConfig(isLocalHost(r.Host))))
+}
+
+// clientConfig is what /config.js hands the browser. Dev auth is only ever offered
+// to a request from this machine.
+func (a *application) clientConfig(localRequest bool) map[string]string {
 	authMode := a.cfg.AuthMode
-	if authMode == "dev" && !isLocalHost(r.Host) {
+	if authMode == "dev" && !localRequest {
 		authMode = "google"
 	}
-	fmt.Fprintf(w, "window.__LITENOTES_CONFIG__=%s;", mustJSON(map[string]string{
+	return map[string]string{
 		"authMode":             authMode,
 		"googleClientId":       a.cfg.GoogleClientID,
 		"attachmentsEnabled":   strconv.FormatBool(a.attachEnabled),
 		"attachMaxBytes":       strconv.FormatInt(a.cfg.AttachMaxBytes, 10),
 		"attachUserQuotaBytes": strconv.FormatInt(a.cfg.AttachUserQuotaBytes, 10),
-	}))
+	}
 }
 func (a *application) ready(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
@@ -576,7 +615,7 @@ func (a *application) loginDev(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 500, "INTERNAL_ERROR", "gagal membuat user")
 		return
 	}
-	a.setSession(w, u)
+	a.setSession(w, u, time.Now())
 	jsonOK(w, map[string]any{"user": u, "server_time": time.Now().UnixMilli()})
 }
 
@@ -618,7 +657,7 @@ func (a *application) loginGoogle(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 500, "INTERNAL_ERROR", "gagal menyimpan user")
 		return
 	}
-	a.setSession(w, u)
+	a.setSession(w, u, time.Now())
 	jsonOK(w, map[string]any{"user": u, "server_time": time.Now().UnixMilli()})
 }
 func (a *application) logout(w http.ResponseWriter, r *http.Request) {
@@ -782,6 +821,19 @@ func (a *application) withAuth(fn http.HandlerFunc) http.HandlerFunc {
 			jsonError(w, 401, "UNAUTHENTICATED", "session tidak valid")
 			return
 		}
+		// SESSION_MAX_AGE is a hard limit, not only a renewal limit: lowering it signs
+		// existing sessions out too (for example after a suspected cookie theft).
+		if time.Since(claims.signedInAt()) >= a.cfg.SessionMaxAge {
+			jsonError(w, 401, "UNAUTHENTICATED", "session sudah terlalu lama, silakan login ulang")
+			return
+		}
+		// The client names the account it is working as. If this browser's cookie now
+		// belongs to someone else (signed in from another tab), refuse instead of
+		// writing one account's notes into the other.
+		if want := r.Header.Get("X-User-Id"); want != "" && want != claims.Subject {
+			jsonError(w, 409, "ACCOUNT_MISMATCH", "session milik akun lain")
+			return
+		}
 		u, err := a.findUser(r.Context(), claims.Subject)
 		if errors.Is(err, sql.ErrNoRows) {
 			jsonError(w, 401, "UNAUTHENTICATED", "user tidak ditemukan")
@@ -793,7 +845,7 @@ func (a *application) withAuth(fn http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if time.Since(time.Unix(claims.IssuedAt, 0)) >= sessionRenewAfter {
-			a.setSession(w, u)
+			a.setSession(w, u, claims.signedInAt())
 		}
 		fn(w, r.WithContext(context.WithValue(r.Context(), userKey{}, u)))
 	}
@@ -811,13 +863,36 @@ type jwtClaims struct {
 	Audience  string `json:"aud"`
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`
+	AuthTime  int64  `json:"auth_time,omitempty"`
 }
 
-func (a *application) setSession(w http.ResponseWriter, u user) {
+// signedInAt is when the user last really signed in. Renewals carry it forward, so
+// SessionMaxAge bounds how long a session can slide. Tokens issued before auth_time
+// existed count from their own issue time.
+func (c jwtClaims) signedInAt() time.Time {
+	if c.AuthTime > 0 {
+		return time.Unix(c.AuthTime, 0)
+	}
+	return time.Unix(c.IssuedAt, 0)
+}
+
+// setSession issues a session for u. signedInAt is the real sign-in (now, for a
+// login); a session never lasts past signedInAt+SessionMaxAge.
+func (a *application) setSession(w http.ResponseWriter, u user, signedInAt time.Time) {
 	now := time.Now()
-	c := jwtClaims{Subject: u.ID, Issuer: "litenotes", Audience: "litenotes-web", IssuedAt: now.Unix(), ExpiresAt: now.Add(a.cfg.SessionTTL).Unix()}
+	exp := now.Add(a.cfg.SessionTTL)
+	if limit := signedInAt.Add(a.cfg.SessionMaxAge); limit.Before(exp) {
+		exp = limit
+	}
+	// Under a second left would round Max-Age down to 0, which net/http sends as no
+	// Max-Age at all: a browser-session cookie holding a dead token.
+	maxAge := int(exp.Sub(now).Seconds())
+	if maxAge < 1 {
+		return
+	}
+	c := jwtClaims{Subject: u.ID, Issuer: "litenotes", Audience: "litenotes-web", IssuedAt: now.Unix(), ExpiresAt: exp.Unix(), AuthTime: signedInAt.Unix()}
 	token := signJWT(c, a.cfg.SessionSecret)
-	http.SetCookie(w, &http.Cookie{Name: cookieName(a.cfg), Value: token, Path: "/", HttpOnly: true, Secure: a.cfg.AppEnv == "production", SameSite: http.SameSiteLaxMode, MaxAge: int(a.cfg.SessionTTL.Seconds())})
+	http.SetCookie(w, &http.Cookie{Name: cookieName(a.cfg), Value: token, Path: "/", HttpOnly: true, Secure: a.cfg.AppEnv == "production", SameSite: http.SameSiteLaxMode, MaxAge: maxAge})
 }
 func signJWT(c jwtClaims, secret string) string {
 	enc := base64.RawURLEncoding

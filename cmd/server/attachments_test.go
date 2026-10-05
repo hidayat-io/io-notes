@@ -67,7 +67,7 @@ func newAttachApp(t *testing.T, store objectStore, mutate func(*config)) *applic
 	t.Helper()
 	cfg := config{
 		Port: "0", AppOrigin: "http://127.0.0.1:8091", AppEnv: "test", AuthMode: "dev",
-		SessionSecret: "test-secret-that-is-long-enough-32", SessionTTL: time.Hour,
+		SessionSecret: "test-secret-that-is-long-enough-32", SessionTTL: time.Hour, SessionMaxAge: 90 * 24 * time.Hour,
 		DatabaseURL:          "file:" + filepath.Join(t.TempDir(), "test.db"),
 		AttachMaxBytes:       2000,
 		AttachUserQuotaBytes: 2000,

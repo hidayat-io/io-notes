@@ -74,6 +74,11 @@ artifact. When you change `index.html`, `app.js`, `app.css`, or the manifest, bu
 service worker serves `index.html` from its cache without asking the network, so a
 change there only reaches clients through a new `sw.js`.
 
+Server-side changes to what the worker caches need no bump: the served `sw.js` ends
+with a `// server-config:` fingerprint of the CSP and the `config.js` values (for
+example `R2_ACCOUNT_ID`, `GOOGLE_CLIENT_ID`, `ATTACH_*`). Changing any of them changes
+`sw.js`, and installed clients are offered the update.
+
 ## Deploy
 
 ```bash

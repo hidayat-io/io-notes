@@ -84,6 +84,8 @@ Open your browser at **`http://127.0.0.1:8091`** and click "Masuk lokal" to log 
 | `APP_ENV` | No | `development` | `development` or `production` |
 | `AUTH_MODE` | No | `google` | `google` (production) or `dev` (local mock) |
 | `SESSION_SECRET` | **Yes** | — | 32-byte secret key for signing session cookies |
+| `SESSION_TTL` | No | `720h` | Session cookie lifetime; renewed at most once a day while the app is used |
+| `SESSION_MAX_AGE` | No | `2160h` | Longest a session can keep renewing after a Google sign-in (90 days), then sign-in is required again |
 | `TURSO_DATABASE_URL` | **Yes** (Prod) | — | Turso database URL (`libsql://...`) or `file:...` |
 | `TURSO_AUTH_TOKEN` | **Yes** (Prod) | — | Auth token generated from Turso CLI |
 | `GOOGLE_CLIENT_ID` | **Yes** (Prod) | — | Google OAuth 2.0 Client ID for GIS authentication |
