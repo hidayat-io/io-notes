@@ -645,6 +645,80 @@ func TestUnauthenticatedAccessIsRejected(t *testing.T) {
 	}
 }
 
+// Regression: a database hiccup used to come back as 401, which the client reads as
+// "signed out". Only a session that names no user may be a 401.
+func TestAuthDatabaseErrorIsNotUnauthenticated(t *testing.T) {
+	a := newTestApp(t)
+	u := a.mustUser(t, "sub-outage", "outage@example.com")
+	if err := a.db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+	if w := a.do(t, u, "GET", "/api/v1/me", nil); w.Code != 503 {
+		t.Fatalf("status = %d, want 503 while the database is unavailable", w.Code)
+	}
+}
+
+func TestAuthUnknownUserIsUnauthenticated(t *testing.T) {
+	a := newTestApp(t)
+	if w := a.do(t, user{ID: "no-such-user"}, "GET", "/api/v1/me", nil); w.Code != 401 {
+		t.Fatalf("status = %d, want 401 for a session whose user does not exist", w.Code)
+	}
+}
+
+// Sessions slide: an account in use keeps its session, so an active user is never
+// sent back to the login screen just because the first sign-in was 30 days ago.
+func TestSessionRenewal(t *testing.T) {
+	a := newTestApp(t) // SessionTTL is one hour
+	u := a.mustUser(t, "sub-renew", "renew@example.com")
+	now := time.Now()
+	cases := []struct {
+		name      string
+		issuedAt  time.Time
+		wantRenew bool
+	}{
+		{name: "issued just now", issuedAt: now, wantRenew: false},
+		{name: "issued over a day ago", issuedAt: now.Add(-25 * time.Hour), wantRenew: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := jwtClaims{Subject: u.ID, Issuer: "litenotes", Audience: "litenotes-web", IssuedAt: tc.issuedAt.Unix(), ExpiresAt: now.Add(30 * time.Minute).Unix()}
+			r := httptest.NewRequest("GET", "/api/v1/me", nil)
+			r.AddCookie(&http.Cookie{Name: cookieName(a.cfg), Value: signJWT(claims, a.cfg.SessionSecret)})
+			w := httptest.NewRecorder()
+			a.routes().ServeHTTP(w, r)
+			if w.Code != 200 {
+				t.Fatalf("status = %d, want 200", w.Code)
+			}
+			var renewed *http.Cookie
+			for _, c := range w.Result().Cookies() {
+				if c.Name == cookieName(a.cfg) {
+					renewed = c
+				}
+			}
+			if !tc.wantRenew {
+				if renewed != nil {
+					t.Fatal("a fresh session was re-issued; every request would rewrite the cookie")
+				}
+				return
+			}
+			if renewed == nil {
+				t.Fatal("a session older than a day was not renewed")
+			}
+			got, err := verifyJWT(renewed.Value, a.cfg.SessionSecret)
+			if err != nil {
+				t.Fatalf("renewed token does not verify: %v", err)
+			}
+			if got.Subject != u.ID {
+				t.Fatalf("renewed token subject = %q, want %q", got.Subject, u.ID)
+			}
+			// The old token had 30 minutes left; a renewal restarts the full one-hour TTL.
+			if got.ExpiresAt < now.Add(55*time.Minute).Unix() {
+				t.Fatalf("renewed token expires in %v, want a full TTL", time.Until(time.Unix(got.ExpiresAt, 0)).Round(time.Minute))
+			}
+		})
+	}
+}
+
 // Regression: deleting a folder detaches notes, and that detach has to be pullable.
 func TestDeleteFolderBumpsNoteRevisions(t *testing.T) {
 	a := newTestApp(t)

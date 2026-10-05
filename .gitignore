@@ -15,6 +15,9 @@ deploy/*.env.*
 # Cloudflare tunnel config — exposes internal hostname/port topology
 deploy/papandayan-cloudflared.yml
 
+# Browser test dependencies (web/e2e)
+node_modules/
+
 # Editor & temp
 .DS_Store
 *.swp

@@ -106,6 +106,9 @@ go test ./...
 # Validate frontend JavaScript syntax
 node --check web/dist/app.js
 node --check web/dist/sw.js
+
+# Browser tests for app launch (builds and runs the server itself; needs Go + Node)
+cd web/e2e && npm ci && npx playwright install chromium && npm test
 ```
 
 ### Cross-Compile Binary
@@ -135,7 +138,8 @@ For detailed deployment instructions, systemd service setup, and database migrat
 │   └── main_test.go    # Server integration & unit tests
 ├── web/                # Frontend PWA source & embedded assets
 │   ├── embed.go        # //go:embed dist/* directive
-│   └── dist/           # HTML, CSS, JS, PWA Service Worker & icons
+│   ├── dist/           # HTML, CSS, JS, PWA Service Worker & icons
+│   └── e2e/            # Browser tests for app launch (Playwright, not embedded)
 ├── deploy/             # Deployment guides and systemd unit files
 │   └── README.md       # Deployment & operations runbook
 ├── PRD-notepad-pwa.md  # Detailed Product Requirement Definition

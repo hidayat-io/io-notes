@@ -583,7 +583,13 @@
     else location.hash = target;
   }
 
+  // start() replaces an empty hash with #/notes, and that hashchange lands while
+  // boot is still reading IndexedDB. Painting then (no user yet) flashed the login
+  // card at signed-in users; start() reads the route itself once boot finishes.
+  let booted = false;
+
   async function onRouteChange() {
+    if (!booted) return;
     const prev = state.route;
     const next = readRoute();
     const leaving = prev.noteId && prev.noteId !== next.noteId ? prev.noteId : null;
@@ -2221,12 +2227,13 @@
   }
 
   async function syncUnlocked() {
-    if (!state.user || !state.db) return;
+    if (!state.user || !state.db || !booted) return;
     if (!state.online) { setSync('offline'); return; }
     if (syncing) { syncQueued = true; return; }
     syncing = true;
     try {
       setSync('syncing');
+      if (!(await verifySession())) return;
       await pushOutbox();
       await pullChanges();
       await settleSyncState();
@@ -2493,7 +2500,7 @@
     toast('Session expired. Your notes remain saved on this device.', {
       actionLabel: 'Sign in again',
       duration: 0,
-      onAction: async () => { await flushSave(); await meta('cached_user', null); state.user = null; shellMounted = false; paint(); },
+      onAction: async () => { await flushSave(); await meta('cached_user', null); state.user = null; sessionVerified = false; shellMounted = false; paint(); },
     });
   }
 
@@ -2522,7 +2529,7 @@
 
     if (dev) $('#dev-login').onclick = () => void loginDev();
     else loadGoogleSignIn();
-    if (cached) $('#offline-open').onclick = async () => { state.user = cached; await bootLocal(); paint(); scheduleSync(); };
+    if (cached) $('#offline-open').onclick = async () => { state.user = cached; await bootLocal(); paint(); void resumeSession(); };
   }
 
   const loginHint = { cachedUser: null };
@@ -2567,10 +2574,11 @@
   async function onAuthenticated(user) {
     state.user = user;
     loginHint.cachedUser = user;
+    sessionVerified = true; // the server just issued this session
     await bootLocal();
     await meta('cached_user', user);
     paint();
-    scheduleSync(0);
+    void resumeSession();
   }
 
   async function confirmLogout() {
@@ -2594,6 +2602,7 @@
     await meta('cached_user', null);
     loginHint.cachedUser = null;
     state.user = null;
+    sessionVerified = false;
     state.notes = [];
     state.folders = [];
     state.unlocked = Object.create(null);
@@ -2937,6 +2946,8 @@
 
   /* ----------------------------------------------------------------- boot */
 
+  // IndexedDB only: a returning user is painted without touching the network.
+  // Server-side lists catch up afterwards in resumeSession().
   async function bootLocal() {
     await migrateLegacyForUser();
     state.notes = (await notesAll()).map((n) => ({ ...n }));
@@ -2944,14 +2955,51 @@
     if (!state.deviceId) { state.deviceId = uid(); await meta('device_id', state.deviceId); }
     state.clockOffset = Number(await meta('clock_offset_ms')) || 0;
     state.folders = (await meta('folders')) || [];
-    if (state.online) {
-      try {
-        const j = await api('/api/v1/folders');
-        state.folders = j.folders || [];
-        await meta('folders', state.folders); // folders must survive offline too
-      } catch { /* keep the cached copy */ }
-      await refreshAttachments();
+  }
+
+  async function refreshFolders() {
+    if (!state.online) return;
+    try {
+      const j = await api('/api/v1/folders');
+      state.folders = j.folders || [];
+      await meta('folders', state.folders); // folders must survive offline too
+    } catch { /* keep the cached copy */ }
+  }
+
+  let sessionVerified = false;
+
+  // The cached account is good for painting only. Before anything is pulled or
+  // pushed, /me has to confirm the session cookie belongs to that same account;
+  // otherwise one account's unsynced notes could be pushed into another.
+  async function verifySession() {
+    if (sessionVerified) return true;
+    const me = (await api('/api/v1/me')).user;
+    if (me.id !== state.user.id) {
+      await flushSave();
+      await meta('cached_user', me);
+      location.reload();
+      return false;
     }
+    state.user = me;
+    loginHint.cachedUser = me;
+    await meta('cached_user', me);
+    sessionVerified = true;
+    return true;
+  }
+
+  // Everything the first paint did not wait for. Offline or a server error keeps
+  // the cached copy on screen; the sync loop retries /me with its own backoff.
+  async function resumeSession() {
+    try {
+      if (!(await verifySession())) return;
+      await refreshFolders();
+      await refreshAttachments();
+      paint();
+      rerenderOverlay();
+    } catch (e) {
+      if (e.status === 401) { onSessionExpired(); return; }
+    }
+    scheduleSync(0);
   }
 
   async function start() {
@@ -2972,16 +3020,17 @@
     const cached = await meta('cached_user');
     loginHint.cachedUser = cached || null;
 
-    if (state.online) {
+    // A returning user opens straight into their notes; resumeSession() checks the
+    // session in the background. Only a browser with no cached account waits for
+    // the server before deciding between notes and the login card.
+    if (cached) {
+      state.user = cached;
+    } else if (state.online) {
       try {
         state.user = (await api('/api/v1/me')).user;
         loginHint.cachedUser = state.user;
-      } catch (e) {
-        if (e.status === 401) { await meta('cached_user', null); loginHint.cachedUser = null; }
-        else if (cached) state.user = cached;
-      }
-    } else if (cached) {
-      state.user = cached;
+        sessionVerified = true;
+      } catch { /* 401 or offline: the login card */ }
     }
 
     if (state.user) {
@@ -2993,9 +3042,10 @@
     if (state.route.noteId && !state.notes.some((n) => n.id === state.route.noteId)) navigate(state.route.view, null, true);
     state.route = readRoute();
 
+    booted = true;
     paint();
     setSync(state.online ? 'local' : 'offline');
-    if (state.user) scheduleSync(0);
+    if (state.user) void resumeSession();
 
     setupInstall();
     setupServiceWorker();

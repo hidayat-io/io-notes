@@ -1,7 +1,6 @@
-const CACHE = 'io-notes-shell-v67';
-const ASSETS = ['/', '/index.html', '/app.css?v=67', '/app.js?v=67', '/manifest.webmanifest?v=67', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
+const CACHE = 'io-notes-shell-v68';
+const ASSETS = ['/', '/index.html', '/config.js', '/app.css?v=68', '/app.js?v=68', '/manifest.webmanifest?v=68', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
 const ASSET_PATHS = new Set(['/app.css', '/app.js', '/manifest.webmanifest', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png', '/favicon.ico', '/icon.svg']);
-const NAV_TIMEOUT = 3000;
 
 self.addEventListener('install', (e) => {
   // No skipWaiting here: the page decides when to swap, so an open editor is never
@@ -21,21 +20,18 @@ self.addEventListener('activate', (e) => {
   );
 });
 
-function navigateWithTimeout(request) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const fallback = () => {
-      if (settled) return;
-      settled = true;
-      caches.match('/index.html').then((r) => resolve(r || Response.error()));
-    };
-    const timer = setTimeout(fallback, NAV_TIMEOUT);
-    fetch(request).then((r) => {
-      clearTimeout(timer);
-      if (settled) return;
-      settled = true;
-      resolve(r);
-    }).catch(() => { clearTimeout(timer); fallback(); });
+// config.js only carries per-deployment settings (auth mode, client id, limits):
+// serve the cached copy at once and refresh it for the next launch.
+function staleWhileRevalidate(e) {
+  return caches.open(CACHE).then(async (c) => {
+    const hit = await c.match(e.request);
+    const fresh = fetch(e.request).then((r) => {
+      if (r.ok) return c.put(e.request, r.clone()).then(() => r);
+      return r;
+    });
+    if (!hit) return fresh;
+    e.waitUntil(fresh.catch(() => {}));
+    return hit;
   });
 }
 
@@ -43,10 +39,20 @@ self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   const u = new URL(e.request.url);
   if (u.origin !== self.location.origin) return;
-  if (u.pathname.startsWith('/api/') || u.pathname === '/config.js' || u.pathname === '/sw.js') return;
+  if (u.pathname.startsWith('/api/') || u.pathname === '/sw.js') return;
 
+  // The app is hash-routed, so every launch requests "/". Serve the cached shell
+  // without asking the network: it only references versioned assets, and a new
+  // version arrives through the waiting worker and the page's "Reload" toast.
   if (e.request.mode === 'navigate') {
-    e.respondWith(navigateWithTimeout(e.request));
+    if (u.pathname === '/' || u.pathname === '/index.html') {
+      e.respondWith(caches.match('/index.html').then((hit) => hit || fetch(e.request)));
+    }
+    return;
+  }
+
+  if (u.pathname === '/config.js') {
+    e.respondWith(staleWhileRevalidate(e));
     return;
   }
 

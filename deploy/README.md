@@ -59,6 +59,7 @@ Never compile on the server.
 go test ./...
 node --check web/dist/app.js
 node --check web/dist/sw.js
+(cd web/e2e && npm ci && npx playwright install chromium && npm test)
 
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
   go build -trimpath -ldflags='-s -w' \
@@ -67,9 +68,11 @@ file build/litenotes-linux-arm64
 ```
 
 The PWA assets in `web/dist` are embedded into the binary, so the binary is the only
-artifact. When you change `app.js`, `app.css`, or the manifest, bump the `?v=` query
-in `web/dist/index.html` **and** the matching `CACHE` name and asset list in
-`web/dist/sw.js`, otherwise installed clients keep serving the previous shell.
+artifact. When you change `index.html`, `app.js`, `app.css`, or the manifest, bump the
+`?v=` query in `web/dist/index.html` **and** the matching `CACHE` name and asset list in
+`web/dist/sw.js`, otherwise installed clients keep serving the previous shell. The
+service worker serves `index.html` from its cache without asking the network, so a
+change there only reaches clients through a new `sw.js`.
 
 ## Deploy
 

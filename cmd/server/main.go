@@ -765,6 +765,11 @@ func (a *application) deleteFolder(w http.ResponseWriter, r *http.Request) {
 
 type userKey struct{}
 
+// sessionRenewAfter is how old a session may get before an authenticated request
+// re-issues it. Once a day keeps the cookie from being rewritten on every request
+// while still sliding the expiry for anyone who keeps using the app.
+const sessionRenewAfter = 24 * time.Hour
+
 func (a *application) withAuth(fn http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		c, err := r.Cookie(cookieName(a.cfg))
@@ -778,9 +783,17 @@ func (a *application) withAuth(fn http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		u, err := a.findUser(r.Context(), claims.Subject)
-		if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
 			jsonError(w, 401, "UNAUTHENTICATED", "user tidak ditemukan")
 			return
+		}
+		if err != nil {
+			// Not a 401: the client treats that as "signed out" and drops the session.
+			jsonError(w, 503, "DATABASE_UNAVAILABLE", "database tidak tersedia")
+			return
+		}
+		if time.Since(time.Unix(claims.IssuedAt, 0)) >= sessionRenewAfter {
+			a.setSession(w, u)
 		}
 		fn(w, r.WithContext(context.WithValue(r.Context(), userKey{}, u)))
 	}
