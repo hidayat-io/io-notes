@@ -422,11 +422,13 @@ type application struct {
 	store         objectStore
 	attachEnabled bool
 
-	loginLimit    *limiter
-	pushLimit     *limiter
-	pullLimit     *limiter
-	uploadLimit   *limiter
-	downloadLimit *limiter
+	loginLimit     *limiter
+	pushLimit      *limiter
+	pullLimit      *limiter
+	uploadLimit    *limiter
+	downloadLimit  *limiter
+	shareLimit     *limiter
+	shareReadLimit *limiter
 }
 
 // newApplication wires the derived state (CSP hashes, rate limiters) that both
@@ -434,17 +436,19 @@ type application struct {
 func newApplication(cfg config, db *sql.DB, logger *slog.Logger, store objectStore) *application {
 	indexHTML, _ := readEmbeddedIndex()
 	a := &application{
-		cfg:           cfg,
-		db:            db,
-		logger:        logger,
-		csp:           cspFor(indexHTML, cfg),
-		store:         store,
-		attachEnabled: store != nil,
-		loginLimit:    newLimiter(10, 20), // PRD 14.3
-		pushLimit:     newLimiter(30, 60), // burst covers a reconnect flush
-		pullLimit:     newLimiter(120, 180),
-		uploadLimit:   newLimiter(10, 20),
-		downloadLimit: newLimiter(60, 90),
+		cfg:            cfg,
+		db:             db,
+		logger:         logger,
+		csp:            cspFor(indexHTML, cfg),
+		store:          store,
+		attachEnabled:  store != nil,
+		loginLimit:     newLimiter(10, 20), // PRD 14.3
+		pushLimit:      newLimiter(30, 60), // burst covers a reconnect flush
+		pullLimit:      newLimiter(120, 180),
+		uploadLimit:    newLimiter(10, 20),
+		downloadLimit:  newLimiter(60, 90),
+		shareLimit:     newLimiter(30, 30), // owner endpoints; opening the share dialog is a single GET
+		shareReadLimit: newLimiter(60, 30), // public reads, per IP
 	}
 	// The local view of config.js keeps AUTH_MODE as configured, so a dev/google
 	// switch changes the fingerprint too.
@@ -486,6 +490,10 @@ func (a *application) routes() http.Handler {
 	mux.HandleFunc("POST /api/v1/notes/{id}/unlock", a.withAuth(a.unlockNote))
 	mux.HandleFunc("POST /api/v1/notes/{id}/password/reset-request", a.withAuth(a.requestPasswordReset))
 	mux.HandleFunc("POST /api/v1/notes/{id}/password/reset", a.byIP(a.resetNotePassword))
+	mux.HandleFunc("GET /api/v1/notes/{id}/share", a.withAuth(a.byUser(a.shareLimit, a.getShare)))
+	mux.HandleFunc("PUT /api/v1/notes/{id}/share", a.withAuth(a.byUser(a.shareLimit, a.putShare)))
+	mux.HandleFunc("DELETE /api/v1/notes/{id}/share", a.withAuth(a.byUser(a.shareLimit, a.deleteShare)))
+	mux.HandleFunc("POST /api/v1/shared/read", a.limitBy(a.shareReadLimit, a.clientIP, a.sharedRead))
 	mux.HandleFunc("POST /api/v1/attachments", a.withAuth(a.byUser(a.uploadLimit, a.createAttachment)))
 	mux.HandleFunc("POST /api/v1/attachments/{id}/confirm", a.withAuth(a.byUser(a.uploadLimit, a.confirmAttachment)))
 	mux.HandleFunc("GET /api/v1/attachments", a.withAuth(a.byUser(a.downloadLimit, a.listAttachments)))
@@ -508,6 +516,20 @@ func (a *application) staticFallback(api http.Handler) http.Handler {
 			w.Header().Set("Content-Type", contentType(path))
 			w.Header().Set("Cache-Control", "no-cache")
 			_, _ = w.Write(a.swJS)
+			return
+		}
+		if path == "/s" && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			page, err := webassets.Dist.ReadFile("dist/share.html")
+			if err != nil {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Cache-Control", "no-cache")
+			// The link is a credential. Never let it travel in a Referer, and keep it out of search.
+			w.Header().Set("Referrer-Policy", "no-referrer")
+			w.Header().Set("X-Robots-Tag", "noindex")
+			_, _ = w.Write(page)
 			return
 		}
 		if path == "/" || strings.HasPrefix(path, "/#") {

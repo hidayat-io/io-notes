@@ -14,6 +14,7 @@
 - 📁 **Folders & Trash Management**: Organize notes into custom folders, search notes instantly, and recover deleted items from Trash.
 - 🔒 **Note Lock / Password Protection**: Secure individual sensitive notes with password encryption.
 - 📎 **Private Attachments & Preview**: Upload images and documents to private object storage, with inline previews for images, Markdown, plain text, and PDF.
+- 🔗 **Share via Link**: Share a note as a read-only link (`/s#<token>`) that opens without signing in. The owner can turn the link off or regenerate it at any time. Attachments are not included.
 - ⚡ **Zero-Dependency Single Binary**: Frontend PWA assets (`web/dist`) are embedded directly into the Go server binary.
 - ☁️ **Cloud Durability via Turso**: Multi-device sync powered by Turso Cloud (`libSQL`) with fallback to local SQLite.
 
@@ -47,6 +48,24 @@ Markdown and plain-text previews are limited to 512 KiB to keep the UI responsiv
 Uploaded Markdown is escaped before rendering, uploaded HTML is never interpreted,
 and remote images in Markdown are shown as labels rather than fetched. Formats that
 cannot be previewed remain downloadable.
+
+---
+
+## 🔗 Sharing notes
+
+A shared note is read-only and always shows the latest version. The link carries a random token in the URL fragment (`/s#<token>`), so the token is never sent to the server in a URL, written to access logs, or leaked through `Referer`.
+
+- One link per note, no expiry. **Regenerate** replaces the token (the old link stops working immediately); **Turn off link** deletes it.
+- A link only works while the note exists, is not in Trash and is not locked. Locked notes cannot be shared.
+- Attachments are not shared; an attachment reference appears as a file name only.
+- Every failure (unknown, turned off, in Trash, locked) returns the same `404`, so a link cannot be probed.
+
+| Endpoint | Auth | Purpose |
+|---|---|---|
+| `GET /api/v1/notes/{id}/share` | session | `{shared, token, active}` |
+| `PUT /api/v1/notes/{id}/share` | session | Create or fetch the link; `{"regenerate": true}` replaces it |
+| `DELETE /api/v1/notes/{id}/share` | session | Turn the link off (idempotent) |
+| `POST /api/v1/shared/read` | none, rate limited per IP | Body `{"token"}` → `{title, content, updated_at}` |
 
 ---
 
@@ -135,12 +154,13 @@ For detailed deployment instructions, systemd service setup, and database migrat
 ├── cmd/server/         # Go server (entrypoint, routes, auth, sync, attachments)
 │   ├── main.go         # Server entry point & API endpoints
 │   ├── attachments.go  # Upload, preview/download, quota, and storage handlers
+│   ├── share.go        # Share links: owner endpoints and the public read endpoint
 │   ├── middleware.go   # Access logging, rate limiting, CORS, security headers
 │   ├── schema.sql      # Database schema (SQLite / Turso)
 │   └── main_test.go    # Server integration & unit tests
 ├── web/                # Frontend PWA source & embedded assets
 │   ├── embed.go        # //go:embed dist/* directive
-│   ├── dist/           # HTML, CSS, JS, PWA Service Worker & icons
+│   ├── dist/           # HTML, CSS, JS, PWA Service Worker & icons (share.* = public share page)
 │   └── e2e/            # Browser tests for app launch (Playwright, not embedded)
 ├── deploy/             # Deployment guides and systemd unit files
 │   └── README.md       # Deployment & operations runbook

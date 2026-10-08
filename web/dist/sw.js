@@ -1,5 +1,5 @@
-const CACHE = 'io-notes-shell-v69';
-const ASSETS = ['/', '/index.html', '/config.js', '/app.css?v=69', '/app.js?v=69', '/manifest.webmanifest?v=69', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
+const CACHE = 'io-notes-shell-v70';
+const ASSETS = ['/', '/index.html', '/config.js', '/app.css?v=70', '/app.js?v=70', '/manifest.webmanifest?v=70', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
 const ASSET_PATHS = new Set(['/app.css', '/app.js', '/manifest.webmanifest', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png', '/favicon.ico', '/icon.svg']);
 
 self.addEventListener('install', (e) => {

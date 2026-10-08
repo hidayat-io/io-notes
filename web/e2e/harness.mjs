@@ -66,7 +66,11 @@ export async function startApp() {
   const delays = new Map();
   // pathname -> how many more requests get a 503 instead of reaching the server.
   const failures = new Map();
+  // Every request that reaches the server, as "METHOD /path?query". This is the
+  // server's own view, so it proves what the browser really put on the wire.
+  const seen = [];
   const proxy = http.createServer((req, res) => {
+    seen.push(`${req.method} ${req.url}`);
     const { pathname } = new URL(req.url, base);
     const failLeft = failures.get(pathname) || 0;
     if (failLeft > 0) {
@@ -94,6 +98,7 @@ export async function startApp() {
     base,
     delays,
     failures,
+    seen,
     // Same database, new process: how a deploy or a config change looks to clients.
     async restart(extraEnv = {}) {
       await stopServer();

@@ -68,7 +68,7 @@ MVP dianggap berhasil jika user dapat:
 
 ### 1.3 Non-goals MVP
 
-- Kolaborasi real-time atau shared note.
+- Kolaborasi real-time atau shared note yang bisa diedit penerima. (Link share read-only sudah didukung setelah MVP; lihat README.)
 - CRDT, operational transform, atau presence indicator.
 - Rich text, WYSIWYG, attachment, gambar, video, audio, dan embed.
 - Folder, tag, pin, reminder, checklist khusus, dan version history.

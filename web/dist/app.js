@@ -360,6 +360,8 @@
     upload: '<path d="M12 14.5v-10M7.5 8.5 12 4l4.5 4.5"/><path d="M5 19.5h14"/>',
     paperclip: '<path d="m20 11.5-8.2 8.2a5 5 0 0 1-7-7l8.9-8.9a3.3 3.3 0 0 1 4.7 4.7L9.6 17.3a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>',
     warn: '<path d="M12 4.6 2.8 20.2h18.4z"/><path d="M12 10v4.4"/><circle cx="12" cy="17.4" r=".9" fill="currentColor" stroke="none"/>',
+    link: '<path d="M10 13.5a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.1 1.1"/><path d="M14 10.5a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.1-1.1"/>',
+    copy: '<rect x="9" y="9" width="11" height="11" rx="2.2"/><path d="M5 15V6.2A2.2 2.2 0 0 1 7.2 4H16"/>',
   };
 
   function icon(name, size = 18) {
@@ -790,6 +792,7 @@
     if (act === 'delete') return void deleteNote();
     if (act === 'restore') return void restoreNote();
     if (act === 'lock') return void lockMenu();
+    if (act === 'share') return void shareMenu();
     if (act === 'move') return void moveNote();
     if (act === 'fmt-bold') return void wrapSelection('**', '**');
     if (act === 'fmt-italic') return void wrapSelection('*', '*');
@@ -1051,7 +1054,7 @@
 
     const actions = inTrash
       ? `<button class="btn" data-act="restore">${icon('restore', 15)} Restore</button>`
-      : `${attachmentsOn() ? `<button class="icon-btn" data-act="attachments" aria-label="Manage attachments" title="Attachments">${icon('paperclip')}</button>` : ''}<button class="icon-btn ${n.is_locked ? 'on' : ''}" data-act="lock" aria-label="${n.is_locked ? 'Manage note lock' : 'Lock note with password'}" title="${n.is_locked ? 'Locked note' : 'Lock note'}">${icon(n.is_locked ? 'lock' : 'unlock')}</button>
+      : `${attachmentsOn() ? `<button class="icon-btn" data-act="attachments" aria-label="Manage attachments" title="Attachments">${icon('paperclip')}</button>` : ''}<button class="icon-btn" data-act="share" aria-label="Share note" title="Share">${icon('link')}</button><button class="icon-btn ${n.is_locked ? 'on' : ''}" data-act="lock" aria-label="${n.is_locked ? 'Manage note lock' : 'Lock note with password'}" title="${n.is_locked ? 'Locked note' : 'Lock note'}">${icon(n.is_locked ? 'lock' : 'unlock')}</button>
          <button class="icon-btn danger" data-act="delete" aria-label="Move note to Trash" title="Move to Trash">${icon('trash')}</button>`;
 
     const formatBar = inTrash ? '' : `<div class="format-bar" role="toolbar" aria-label="Formatting">
@@ -2030,6 +2033,99 @@
     await saveLocal(n);
     paint();
     scheduleSync();
+  }
+
+  /* ----------------------------------------------------------- note share */
+
+  const shareURL = (token) => `${location.origin}/s#${token}`;
+  const shareEndpoint = (n) => `/api/v1/notes/${encodeURIComponent(n.id)}/share`;
+  const SHARE_LOCKED_MESSAGE = 'Locked notes cannot be shared. Remove the password first.';
+
+  // Online-only, like attachments: the link lives on the server and never enters the
+  // note sync model. The note has to exist there first, hence ensureOnServer.
+  async function shareMenu() {
+    const n = currentNote();
+    if (!n || n.deleted_at) return;
+    if (!state.online) { toast('Sharing requires internet connection.'); return; }
+    const ready = await ensureOnServer(n);
+    if (!ready) { toast('Note not synced yet. Please try again shortly.'); return; }
+    try {
+      let status = await api(shareEndpoint(ready));
+      while (status) status = await shareDialog(ready, status);
+    } catch (e) {
+      toast(e.code === 'NOTE_LOCKED' ? SHARE_LOCKED_MESSAGE : netMessage(e));
+    }
+  }
+
+  // Shows the dialog for the current share status and returns the status that
+  // results from the chosen action, or null once the dialog is dismissed.
+  async function shareDialog(n, status) {
+    if (!status.shared) {
+      if (n.is_locked) { toast(SHARE_LOCKED_MESSAGE); return null; }
+      const choice = await modal({
+        title: 'Share note',
+        description: 'Anyone with the link can read this note without signing in. Attachments are not shared. You can turn the link off at any time.',
+        choices: [{ value: 'create', label: 'Create link', icon: 'link' }],
+        cancelText: 'Close',
+      });
+      if (choice !== 'create') return null;
+      const created = await api(shareEndpoint(n), { method: 'PUT', body: '{}' });
+      return { shared: true, active: true, token: created.token };
+    }
+
+    const url = shareURL(status.token);
+    const pending = modal({
+      title: 'Share note',
+      description: status.active
+        ? 'Anyone with this link can read the latest version of this note.'
+        : 'This link is inactive while the note is locked.',
+      previewHTML: `<div class="field"><label for="share-url">Link</label><div class="share-row"><input id="share-url" type="text" readonly value="${esc(url)}"><button type="button" class="btn" data-share-copy>${icon('copy', 15)} Copy</button></div></div>`,
+      choices: [
+        { value: 'regenerate', label: 'Regenerate link', icon: 'restore' },
+        { value: 'revoke', label: 'Turn off link', icon: 'trash', danger: true },
+      ],
+      cancelText: 'Close',
+    });
+    // modal() builds the dialog synchronously, so the Copy button exists already.
+    wireShareCopy(url);
+    const choice = await pending;
+
+    if (choice === 'regenerate') {
+      const ok = await modal({ title: 'Regenerate link?', description: 'The current link stops working immediately. Anyone who has it loses access.', confirmText: 'Regenerate', danger: true });
+      if (!ok) return status;
+      const fresh = await api(shareEndpoint(n), { method: 'PUT', body: JSON.stringify({ regenerate: true }) });
+      return { shared: true, active: true, token: fresh.token };
+    }
+    if (choice === 'revoke') {
+      const ok = await modal({ title: 'Turn off link?', description: 'Anyone with the link loses access to this note.', confirmText: 'Turn off link', danger: true });
+      if (!ok) return status;
+      await api(shareEndpoint(n), { method: 'DELETE' });
+      return { shared: false };
+    }
+    return null;
+  }
+
+  function wireShareCopy(url) {
+    const form = $('#modal-form');
+    const button = $('[data-share-copy]');
+    if (!form || !button) return;
+    // Choice dialogs have no submit handler, and Enter in the read-only input would
+    // otherwise submit the form and reload the page.
+    form.addEventListener('submit', (e) => e.preventDefault());
+    button.addEventListener('click', async () => {
+      const label = button.innerHTML;
+      try {
+        await navigator.clipboard.writeText(url);
+        button.innerHTML = `${icon('check', 15)} Copied`;
+      } catch {
+        // Toasts sit under the <dialog> while it is open, so feedback stays inline.
+        const input = $('#share-url');
+        input?.focus();
+        input?.select();
+        button.textContent = 'Press Ctrl/Cmd+C';
+      }
+      setTimeout(() => { if (button.isConnected) button.innerHTML = label; }, 1800);
+    });
   }
 
   /* ------------------------------------------------------------ note lock */
