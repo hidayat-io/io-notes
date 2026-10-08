@@ -1,0 +1,35 @@
+/* Rendered Markdown. Shared by the app (note view, attachment preview) and the public
+   share page, so it only uses custom properties that both stylesheets define. */
+
+.md{font-size:14px;line-height:1.6;color:var(--text);overflow-wrap:anywhere}
+.md>:first-child{margin-top:0}
+.md h1,.md h2,.md h3,.md h4,.md h5,.md h6{margin:1.05em 0 .4em;color:var(--text);line-height:1.25;letter-spacing:-.015em}
+.md h1{font-size:1.65em}.md h2{font-size:1.4em}.md h3{font-size:1.2em}
+.md h4,.md h5,.md h6{font-size:1em}
+.md p{margin:.45em 0}
+.md ul,.md ol{margin:.5em 0;padding-left:1.7em}
+.md li{margin:.2em 0}
+.md li>ul,.md li>ol,.md li>p{margin:.2em 0}
+.md a{color:var(--accent-text);text-underline-offset:2px}
+.md blockquote{margin:.65em 0;padding:.15em 0 .15em .85em;border-left:3px solid var(--border-strong);color:var(--text-muted)}
+.md blockquote>:first-child{margin-top:0}
+.md blockquote>:last-child{margin-bottom:0}
+.md hr{height:.5px;margin:1.2em 0;border:0;background:var(--border)}
+.md .md-code{position:relative;margin:.7em 0;padding:12px;overflow:auto;border-radius:7px;background:var(--surface-3);font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere}
+.md .md-code-language{display:block;margin:0 0 5px;color:var(--text-tertiary);font:10px/1.2 var(--font);text-transform:uppercase;letter-spacing:.04em}
+.md :not(pre)>code{padding:2px 4px;border-radius:4px;background:var(--surface-3);font:12px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+/* Only the task items drop their bullet; the checkbox takes its place. A list that mixes both keeps the bullets. */
+.md .md-task{list-style:none;margin-left:-1.45em}
+.md .md-task>input{margin:0 .5em 0 0;vertical-align:-.1em;accent-color:var(--accent)}
+.md .md-image-label{color:var(--text-tertiary);font-style:italic}
+.md .md-attach{margin:.5em 0}
+.md .md-attach-label{color:var(--text-muted)}
+.md .md-table-wrap{margin:.7em 0;overflow-x:auto}
+.md table{border-collapse:collapse;min-width:min(100%,24em)}
+.md th,.md td{padding:6px 10px;border:.5px solid var(--border-strong);text-align:left;vertical-align:top}
+.md th{background:var(--surface-2);font-weight:600}
+.md .md-al-center{text-align:center}
+.md .md-al-right{text-align:right}
+.md .md-notice{margin:.5em 0;padding:8px 10px;border-radius:7px;background:var(--surface-2);color:var(--text-muted);font-size:.9em}
+.md .md-plain{white-space:pre-wrap;overflow-wrap:anywhere;font:12px/1.55 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.md .md-empty{color:var(--text-tertiary)}

@@ -4,6 +4,7 @@
 :root{
   color-scheme:light dark;
   --bg:#fbfbfd;
+  --surface-2:#f2f2f7;
   --surface-3:#e5e5ea;
   --border:#e5e5ea;
   --border-strong:#d1d1d6;
@@ -12,6 +13,7 @@
   --text-muted:#6e6e73;
   --text-tertiary:#8e8e93;
   --accent:#007aff;
+  --accent-text:#0a3d9e;
   --folder-yellow:#ffcc02;
   --ok:#34c759;
   --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue",Helvetica,Arial,sans-serif;
@@ -19,6 +21,7 @@
 @media (prefers-color-scheme:dark){
   :root{
     --bg:#1c1c1e;
+    --surface-2:#3a3a3c;
     --surface-3:#48484a;
     --border:#38383a;
     --border-strong:#48484a;
@@ -27,6 +30,7 @@
     --text-muted:#98989d;
     --text-tertiary:#8e8e93;
     --accent:#0a84ff;
+    --accent-text:#6ea8ff;
     --ok:#30d158;
   }
 }
@@ -66,3 +70,5 @@ body{margin:0;min-height:100dvh;background:var(--bg);color:var(--text);font-fami
 .spinner{width:20px;height:20px;border-radius:50%;border:2px solid var(--border);border-top-color:var(--accent);animation:spin .7s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 @media (prefers-reduced-motion:reduce){.spinner{animation-duration:2.4s}}
+
+.share-content.md{font-size:16px;line-height:1.65}

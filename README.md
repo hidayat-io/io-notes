@@ -14,6 +14,7 @@
 - 📁 **Folders & Trash Management**: Organize notes into custom folders, search notes instantly, and recover deleted items from Trash.
 - 🔒 **Note Lock / Password Protection**: Secure individual sensitive notes with password encryption.
 - 📎 **Private Attachments & Preview**: Upload images and documents to private object storage, with inline previews for images, Markdown, plain text, and PDF.
+- 📝 **Markdown Notes**: Switch any note to Markdown, or start one with the Markdown button, and read it rendered by default: headings, nested lists, tables, task lists, code and links. Edit shows the exact text; shared links render Markdown too.
 - 🔗 **Share via Link**: Share a note as a read-only link (`/s#<token>`) that opens without signing in. The owner can turn the link off or regenerate it at any time. Attachments are not included.
 - ⚡ **Zero-Dependency Single Binary**: Frontend PWA assets (`web/dist`) are embedded directly into the Go server binary.
 - ☁️ **Cloud Durability via Turso**: Multi-device sync powered by Turso Cloud (`libSQL`) with fallback to local SQLite.
@@ -39,7 +40,7 @@ can be rendered safely by the browser.
 | Format | Preview behavior |
 |---|---|
 | JPG, PNG, WebP, GIF | Inline image |
-| Markdown (`.md`) | Rendered headings, lists, checklists, quotes, links, and code |
+| Markdown (`.md`) | Rendered headings, nested lists, tables, task lists, quotes, links, and code |
 | Plain text (`.txt`) | Scrollable plain-text view |
 | PDF | Browser's built-in PDF viewer |
 | DOC, DOCX, XLS, XLSX, ZIP | Metadata and download fallback |
@@ -48,6 +49,19 @@ Markdown and plain-text previews are limited to 512 KiB to keep the UI responsiv
 Uploaded Markdown is escaped before rendering, uploaded HTML is never interpreted,
 and remote images in Markdown are shown as labels rather than fetched. Formats that
 cannot be previewed remain downloadable.
+
+---
+
+## 📝 Markdown notes
+
+Any note can be a Markdown note. Start one with the Markdown button next to **+** in the note list, or switch an existing note with the Markdown button in its header. The switch only changes how the note is shown; the text is never rewritten, so it can be switched back at any time.
+
+- A Markdown note opens **rendered**. **Edit** shows the exact text in a plain editor and **Done** returns to the rendered view.
+- Supported: headings, paragraphs, bold/italic/strikethrough, inline code, fenced code, links, nested lists, task lists (read-only checkboxes), quotes, tables, and horizontal rules.
+- Raw HTML is shown as text, only `http` and `https` links are clickable, and remote images appear as labels instead of loading.
+- Notes larger than 512 KiB are shown as plain text instead of being rendered.
+- The type is stored as the `format` field of the note (`text` or `md`) and syncs like any other field. A shared link to a Markdown note renders it as Markdown.
+- The same renderer shows `.md` attachment previews (see below), including tables and nested lists.
 
 ---
 
@@ -160,7 +174,7 @@ For detailed deployment instructions, systemd service setup, and database migrat
 │   └── main_test.go    # Server integration & unit tests
 ├── web/                # Frontend PWA source & embedded assets
 │   ├── embed.go        # //go:embed dist/* directive
-│   ├── dist/           # HTML, CSS, JS, PWA Service Worker & icons (share.* = public share page)
+│   ├── dist/           # HTML, CSS, JS, PWA Service Worker & icons (share.* = public share page, md.* = Markdown renderer)
 │   └── e2e/            # Browser tests for app launch (Playwright, not embedded)
 ├── deploy/             # Deployment guides and systemd unit files
 │   └── README.md       # Deployment & operations runbook

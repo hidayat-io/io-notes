@@ -1,6 +1,6 @@
-const CACHE = 'io-notes-shell-v70';
-const ASSETS = ['/', '/index.html', '/config.js', '/app.css?v=70', '/app.js?v=70', '/manifest.webmanifest?v=70', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
-const ASSET_PATHS = new Set(['/app.css', '/app.js', '/manifest.webmanifest', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png', '/favicon.ico', '/icon.svg']);
+const CACHE = 'io-notes-shell-v71';
+const ASSETS = ['/', '/index.html', '/config.js', '/app.css?v=71', '/app.js?v=71', '/md.css?v=71', '/md.js?v=71', '/manifest.webmanifest?v=71', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png'];
+const ASSET_PATHS = new Set(['/app.css', '/app.js', '/md.css', '/md.js', '/manifest.webmanifest', '/icon-note-192.png', '/icon-note-512.png', '/icon-note-maskable-512.png', '/favicon-io-notes.png', '/favicon.ico', '/icon.svg']);
 
 self.addEventListener('install', (e) => {
   // No skipWaiting here: the page decides when to swap, so an open editor is never

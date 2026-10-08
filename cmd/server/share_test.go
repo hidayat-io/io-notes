@@ -284,8 +284,11 @@ func TestSharedReadReturnsTheLiveNoteWithoutASession(t *testing.T) {
 	if got["title"] != "first title" || got["content"] != "body" || got["updated_at"] != float64(2000) {
 		t.Fatalf("payload = %v", got)
 	}
-	if len(got) != 3 {
-		t.Fatalf("payload has extra keys (must be exactly title, content, updated_at): %v", got)
+	if got["format"] != "text" {
+		t.Fatalf("format = %v, want text for a note that never set one", got["format"])
+	}
+	if len(got) != 4 {
+		t.Fatalf("payload has unexpected keys (must be exactly title, content, format, updated_at): %v", got)
 	}
 	if cc := w.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", cc)

@@ -51,6 +51,20 @@
     root.innerHTML = `<div class="share-state" role="alert"><h1>${esc(title)}</h1><p>${esc(text)}</p></div>`;
   }
 
+  const attachmentLabel = (name) => `<span class="attach-label">${PAPERCLIP_SVG}<span class="attach-name">${esc(name)}</span></span>`;
+
+  // Markdown notes use the shared renderer. If it did not load, show the text as it
+  // is rather than an empty page.
+  function renderBody(note) {
+    if (note.format === 'md') {
+      if (window.LiteMd) {
+        return `<div class="share-content md">${window.LiteMd.render(note.content, { attachment: attachmentLabel })}</div>`;
+      }
+      return `<div class="share-content">${String(note.content || '').split('\n').map((l) => `<div class="content-line">${esc(l) || '&nbsp;'}</div>`).join('')}</div>`;
+    }
+    return `<div class="share-content">${renderContent(note.content)}</div>`;
+  }
+
   async function load() {
     const token = location.hash.slice(1);
     if (!TOKEN_RE.test(token)) {
@@ -81,7 +95,7 @@
     }
     const title = note.title || 'Untitled';
     document.title = `${title} · io-notes`;
-    root.innerHTML = `<article><h1 class="share-title">${esc(title)}</h1><div class="share-content">${renderContent(note.content)}</div></article>`;
+    root.innerHTML = `<article><h1 class="share-title">${esc(title)}</h1>${renderBody(note)}</article>`;
   }
 
   window.addEventListener('hashchange', () => void load());

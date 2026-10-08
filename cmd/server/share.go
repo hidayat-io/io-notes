@@ -141,12 +141,12 @@ func (a *application) sharedRead(w http.ResponseWriter, r *http.Request) {
 		shareUnavailable(w)
 		return
 	}
-	var title, content string
+	var title, content, format string
 	var updatedAt int64
 	err := a.db.QueryRowContext(r.Context(),
-		`SELECT n.title, n.content, n.updated_at
+		`SELECT n.title, n.content, n.format, n.updated_at
 		 FROM note_shares s JOIN notes n ON n.user_id=s.user_id AND n.id=s.note_id
-		 WHERE s.token=? AND n.deleted_at IS NULL AND n.password_hash=''`, in.Token).Scan(&title, &content, &updatedAt)
+		 WHERE s.token=? AND n.deleted_at IS NULL AND n.password_hash=''`, in.Token).Scan(&title, &content, &format, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		shareUnavailable(w)
 		return
@@ -155,5 +155,5 @@ func (a *application) sharedRead(w http.ResponseWriter, r *http.Request) {
 		jsonError(w, 500, "INTERNAL_ERROR", "gagal membaca note")
 		return
 	}
-	jsonOK(w, map[string]any{"title": title, "content": content, "updated_at": updatedAt})
+	jsonOK(w, map[string]any{"title": title, "content": content, "format": format, "updated_at": updatedAt})
 }

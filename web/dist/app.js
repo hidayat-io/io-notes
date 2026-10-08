@@ -58,6 +58,10 @@
   const titleOf = (n) => { const t = decTitle(n); const c = decContent(n); const first = (c.split('\n').find((l) => l.trim()) || '').trim(); return (t.trim() || stripMarkdown(first).trim() || 'Untitled note').slice(0, 120); };
   const snippetOf = (n) => stripMarkdown(decContent(n)).trim().slice(0, 180);
   const isLocked = (n) => !!n.is_locked && !state.unlocked[n.id];
+  const formatOf = (n) => (n.format === 'md' ? 'md' : 'text');
+  const isMd = (n) => formatOf(n) === 'md';
+  // Markdown notes currently in Edit mode. In memory only: every one opens in View.
+  const mdEditing = new Set();
   const wordsOf = (t) => (t.trim() ? t.trim().split(/\s+/).length : 0);
 
   // PRD 4.4 caps content at 1 MB of UTF-8. Measuring bytes on every keystroke is
@@ -362,6 +366,7 @@
     warn: '<path d="M12 4.6 2.8 20.2h18.4z"/><path d="M12 10v4.4"/><circle cx="12" cy="17.4" r=".9" fill="currentColor" stroke="none"/>',
     link: '<path d="M10 13.5a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1.1 1.1"/><path d="M14 10.5a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1.1-1.1"/>',
     copy: '<rect x="9" y="9" width="11" height="11" rx="2.2"/><path d="M5 15V6.2A2.2 2.2 0 0 1 7.2 4H16"/>',
+    markdown: '<rect x="2.6" y="6" width="18.8" height="12" rx="2.4"/><path d="M6 15V9l2.4 3L10.8 9v6"/><path d="M16.2 9v6m-2.2-2.2 2.2 2.2 2.2-2.2"/>',
   };
 
   function icon(name, size = 18) {
@@ -444,7 +449,8 @@
 
   function persistable(n) {
     const { draft, ...rest } = n;
-    rest.content = canonicalContent(rest.content);
+    // Markdown is stored exactly as written; canonicalContent would rewrite its checklists.
+    rest.content = isMd(rest) ? String(rest.content ?? '') : canonicalContent(rest.content);
     rest.is_pinned = !!rest.is_pinned;
     if (rest.is_locked && rest.encrypted_title) {
       return { ...rest, title: '', content: '' };
@@ -659,6 +665,7 @@
   const root = $('#app');
   let shellMounted = false;
   let editorKey = '';
+  let shownNoteId = null;
   let modalOpen = false;
   let listSig = '';
 
@@ -703,6 +710,7 @@
     <div class="side-head" id="mobile-side-head">
       <span class="brand-mark" aria-hidden="true"></span>
       <h1 class="brand-name">io-notes</h1>
+      <button class="icon-btn" data-act="new-md" aria-label="New Markdown note" title="New Markdown note">${icon('markdown', 20)}</button>
       <button class="icon-btn accent" data-act="new" aria-label="New note" title="New note (Ctrl+N)">${icon('plus', 20)}</button>
     </div>
     <div class="search" id="mobile-search">
@@ -713,7 +721,8 @@
     <div class="list-head" id="list-head">
       <span class="list-title" id="list-title">Folders</span>
       <button class="icon-btn sm" data-act="new-folder" id="btn-new-folder" aria-label="Create new folder" title="New folder">${icon('plus', 15)}</button>
-      <button class="icon-btn accent" data-act="new" id="btn-new-note-desktop" aria-label="New note" title="New note (Ctrl+N)" style="display:none;margin-left:auto">${icon('plus', 20)}</button>
+      <button class="icon-btn" data-act="new-md" id="btn-new-md-desktop" aria-label="New Markdown note" title="New Markdown note" style="display:none;margin-left:auto">${icon('markdown', 20)}</button>
+      <button class="icon-btn accent" data-act="new" id="btn-new-note-desktop" aria-label="New note" title="New note (Ctrl+N)" style="display:none">${icon('plus', 20)}</button>
     </div>
     <div class="list" id="list" role="list"></div>
     <footer class="side-foot" id="mobile-foot">
@@ -777,6 +786,7 @@
     if (!el) return;
     const act = el.dataset.act;
     if (act === 'new') return void newNote();
+    if (act === 'new-md') return void newNote('md');
     if (act === 'open') return void navigate(state.route.view, el.dataset.id);
     if (act === 'back') return void navigate(state.route.view, null);
     if (act === 'drill-back') return drillBack();
@@ -803,6 +813,8 @@
     if (act === 'attach-open') return void openAttachment(el.dataset.id);
     if (act === 'attachments') return void attachmentsManager();
     if (act === 'toggle-pin') return void togglePin();
+    if (act === 'toggle-md') return void toggleFormat();
+    if (act === 'md-edit') return void toggleMdEdit();
     if (act === 'undo') return applyHistory(null, 'undo');
     if (act === 'redo') return applyHistory(null, 'redo');
     if (act === 'unlock-submit') return void submitUnlock(e);
@@ -1005,12 +1017,17 @@
   // editor open but must still flip the header's lock affordance.
   function editorKeyFor(n) {
     if (!n) return `empty:${state.route.view}`;
-    return `note:${n.id}:${n.is_locked ? 'pw' : 'nopw'}:${isLocked(n) ? 'locked' : 'open'}:${n.deleted_at ? 'trash' : 'live'}`;
+    return `note:${n.id}:${n.is_locked ? 'pw' : 'nopw'}:${isLocked(n) ? 'locked' : 'open'}:${n.deleted_at ? 'trash' : 'live'}:${formatOf(n)}:${mdEditing.has(n.id) ? 'edit' : 'view'}`;
   }
 
   function paintEditor() {
     const host = $('#editor');
     const n = currentNote();
+    // Every Markdown note opens in View; only a brand-new empty note stays in Edit.
+    if ((n?.id || null) !== shownNoteId) {
+      shownNoteId = n?.id || null;
+      if (n && mdEditing.has(n.id) && String(n.content || '').trim() !== '') mdEditing.delete(n.id);
+    }
     const key = editorKeyFor(n);
     if (key !== editorKey) {
       editorKey = key;
@@ -1048,41 +1065,48 @@
     }
 
     const inTrash = !!n.deleted_at;
+    const md = isMd(n);
+    const mdEdit = md && !inTrash && mdEditing.has(n.id);
     const crumb = inTrash
       ? `<span class="crumb">${icon('trash', 15)}<span class="name">In Trash</span></span>`
       : `<button class="crumb" data-act="move" title="Move to folder">${icon(n.folder_id ? 'folder' : 'all', 15)}<span class="name">${esc(n.folder_id ? folderName(n.folder_id) : 'No folder')}</span></button>`;
 
+    const mdButtons = inTrash ? '' : `${md ? `<button type="button" class="btn" data-act="md-edit">${mdEdit ? 'Done' : 'Edit'}</button>` : ''}${n.is_locked ? '' : `<button class="icon-btn ${md ? 'on' : ''}" data-act="toggle-md" aria-label="Markdown note" aria-pressed="${md}" title="${md ? 'Markdown note (click to make it a plain note)' : 'Make this a Markdown note'}">${icon('markdown')}</button>`}`;
     const actions = inTrash
       ? `<button class="btn" data-act="restore">${icon('restore', 15)} Restore</button>`
-      : `${attachmentsOn() ? `<button class="icon-btn" data-act="attachments" aria-label="Manage attachments" title="Attachments">${icon('paperclip')}</button>` : ''}<button class="icon-btn" data-act="share" aria-label="Share note" title="Share">${icon('link')}</button><button class="icon-btn ${n.is_locked ? 'on' : ''}" data-act="lock" aria-label="${n.is_locked ? 'Manage note lock' : 'Lock note with password'}" title="${n.is_locked ? 'Locked note' : 'Lock note'}">${icon(n.is_locked ? 'lock' : 'unlock')}</button>
+      : `${mdButtons}${attachmentsOn() ? `<button class="icon-btn" data-act="attachments" aria-label="Manage attachments" title="Attachments">${icon('paperclip')}</button>` : ''}<button class="icon-btn" data-act="share" aria-label="Share note" title="Share">${icon('link')}</button><button class="icon-btn ${n.is_locked ? 'on' : ''}" data-act="lock" aria-label="${n.is_locked ? 'Manage note lock' : 'Lock note with password'}" title="${n.is_locked ? 'Locked note' : 'Lock note'}">${icon(n.is_locked ? 'lock' : 'unlock')}</button>
          <button class="icon-btn danger" data-act="delete" aria-label="Move note to Trash" title="Move to Trash">${icon('trash')}</button>`;
 
     const formatBar = inTrash ? '' : `<div class="format-bar" role="toolbar" aria-label="Formatting">
-      <div class="history-actions">
+      ${!md || mdEdit ? `<div class="history-actions">
         <button type="button" data-act="undo" title="Undo (Cmd+Z)" aria-label="Undo" disabled>${icon('undo', 15)}</button>
         <button type="button" data-act="redo" title="Redo (Cmd+Shift+Z)" aria-label="Redo" disabled>${icon('redo', 15)}</button>
       </div>
-      <span class="sep" aria-hidden="true"></span>
-      <button type="button" data-act="fmt-bold" title="Bold (Cmd+B)" aria-label="Bold">${icon('bold', 16)}</button>
+      <span class="sep" aria-hidden="true"></span>` : ''}
+      ${md ? '' : `<button type="button" data-act="fmt-bold" title="Bold (Cmd+B)" aria-label="Bold">${icon('bold', 16)}</button>
       <button type="button" data-act="fmt-italic" title="Italic (Cmd+I)" aria-label="Italic">${icon('italic', 16)}</button>
       <button type="button" data-act="fmt-underline" title="Underline" aria-label="Underline">${icon('underline', 16)}</button>
       <span class="sep" aria-hidden="true"></span>
       <button type="button" data-act="fmt-check" title="Checklist" aria-label="Checklist">${icon('checkCircle', 16)}</button>
-      <button type="button" data-act="fmt-bullet" title="Bullet list" aria-label="Bullet list">${icon('list', 16)}</button>
+      <button type="button" data-act="fmt-bullet" title="Bullet list" aria-label="Bullet list">${icon('list', 16)}</button>`}
       ${attachmentsOn() ? `<button type="button" data-act="attach" title="Attach file" aria-label="Attach file">${icon('paperclip', 16)}</button>` : ''}
       <span class="sep" aria-hidden="true"></span>
       <button type="button" data-act="toggle-pin" class="${n.is_pinned ? 'on' : ''}" title="${n.is_pinned ? 'Unpin' : 'Pin'}" aria-label="${n.is_pinned ? 'Unpin' : 'Pin'}">${icon(n.is_pinned ? 'pinFill' : 'pin', 16)}</button>
     </div>`;
+
+    const contentArea = md && !mdEdit
+      ? `<div class="md md-view" id="md-view" aria-label="Rendered note"></div>`
+      : `<div class="content-wrap${md ? ' content-wrap-plain' : ''}">
+             ${md ? '' : '<div class="content-render" id="content-render" aria-hidden="true"></div>'}
+             <textarea class="content${md ? ' content-plain' : ''}" id="content" placeholder="Start writing…" aria-label="Note content" ${md ? 'spellcheck="false"' : ''} ${inTrash ? 'readonly' : ''}></textarea>
+           </div>`;
 
     return head(`${crumb}<span class="head-spacer"></span><span class="save-state" id="save-state"></span><div class="actions">${actions}</div>`) +
       formatBar +
       `<div class="editor-body">
          <div class="page">
            <textarea class="title" id="title" rows="1" maxlength="${MAX_TITLE}" placeholder="Title" aria-label="Note title" spellcheck="false" ${inTrash ? 'readonly' : ''}></textarea>
-           <div class="content-wrap">
-             <div class="content-render" id="content-render" aria-hidden="true"></div>
-             <textarea class="content" id="content" placeholder="Start writing…" aria-label="Note content" ${inTrash ? 'readonly' : ''}></textarea>
-           </div>
+           ${contentArea}
          </div>
        </div>
        <footer class="editor-foot">
@@ -1090,17 +1114,92 @@
        </footer>`;
   }
 
+  /* ------------------------------------------------------------ markdown notes */
+
+  // What the editor shows for a note. Markdown is kept exactly as written; plain
+  // notes go through normalizeContent (checklist emoji, <u> tags).
+  function editorText(n) {
+    const raw = state.decrypted[n.id]?.content ?? n.content;
+    return isMd(n) ? String(raw ?? '') : normalizeContent(raw);
+  }
+
+  function renderMdView(n) {
+    const host = $('#md-view');
+    if (!host) return;
+    const source = editorText(n);
+    if (host._source === source) return;
+    host._source = source;
+    host.innerHTML = source.trim()
+      ? LiteMd.render(source, { attachment: attachCardHTML })
+      : '<p class="md-empty">Nothing to preview. Click Edit to start writing.</p>';
+  }
+
+  // Markdown View has no textarea, so only the title can be edited here.
+  function wireMdView(n) {
+    const title = $('#title');
+    title.value = state.decrypted[n.id]?.title ?? n.title;
+    autoGrow(title);
+    renderMdView(n);
+    if (!n.deleted_at) {
+      title.addEventListener('input', onEdit);
+      title.addEventListener('blur', () => void flushSave());
+      title.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); void toggleMdEdit(); }
+      });
+    }
+    refreshEditorChrome(n);
+  }
+
+  async function toggleMdEdit() {
+    const n = currentNote();
+    if (!n || n.deleted_at || !isMd(n)) return;
+    await flushSave();
+    if (mdEditing.has(n.id)) mdEditing.delete(n.id); else mdEditing.add(n.id);
+    paint();
+    if (mdEditing.has(n.id)) requestAnimationFrame(() => $('#content')?.focus({ preventScroll: true }));
+  }
+
+  // Synchronous on purpose: a caller that needs the textarea (attaching a file from
+  // View) uses it right after this returns.
+  function enterMdEdit(n) {
+    if (!isMd(n) || n.deleted_at || mdEditing.has(n.id)) return;
+    mdEditing.add(n.id);
+    paint();
+  }
+
+  async function setFormat(n, format) {
+    if (formatOf(n) === format) return;
+    await flushSave();
+    // Markdown is stored as written, so a plain note's checklists are put into their stored form once.
+    if (format === 'md') n.content = canonicalContent(n.content);
+    n.format = format;
+    mdEditing.delete(n.id);
+    n.updated_at = stamp(n.updated_at);
+    n.mutation_id = uid();
+    n.draft = false;
+    await saveLocal(n);
+    paint();
+    scheduleSync();
+  }
+
+  async function toggleFormat() {
+    const n = currentNote();
+    if (!n || n.deleted_at || n.is_locked) return;
+    await setFormat(n, isMd(n) ? 'text' : 'md');
+  }
+
   function wireEditor(n) {
     if (!n) return;
     const title = $('#title');
     const content = $('#content');
+    if (title && !content && $('#md-view')) { wireMdView(n); return; }
     if (!title || !content) {
       if (isLocked(n)) $('#note-password')?.focus({ preventScroll: true });
       return;
     }
     const d = state.decrypted[n.id];
     title.value = d?.title ?? n.title;
-    content.value = normalizeContent(d?.content ?? n.content);
+    content.value = editorText(n);
     renderContentOverlay(content.value);
     autoGrow(title);
     if (!n.deleted_at) {
@@ -1168,92 +1267,9 @@
   function rerenderOverlay() {
     const c = $('#content');
     if (c) renderContentOverlay(c.value);
-  }
-
-  // A deliberately small Markdown renderer for attachment previews. It starts
-  // by escaping every source character and only emits a known-safe HTML subset;
-  // uploaded HTML is never interpreted. Remote images are shown as labels so a
-  // preview cannot silently make tracking requests.
-  function markdownInline(source) {
-    const code = [];
-    let out = esc(source).replace(/`([^`\n]+)`/g, (_, value) => {
-      const token = `\uE000${code.length}\uE001`;
-      code.push(`<code>${value}</code>`);
-      return token;
-    });
-    out = out
-      .replace(/!\[([^\]]*)\]\([^)]*\)/g, '<span class="md-image-label">[Image: $1]</span>')
-      .replace(/\[([^\]]+)\]\((https?:\/\/[^\s()]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>')
-      .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/~~([^~\n]+)~~/g, '<s>$1</s>')
-      .replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>')
-      .replace(/(^|[^_])_([^_\n]+)_(?![A-Za-z0-9])/g, '$1<em>$2</em>');
-    return out.replace(/\uE000(\d+)\uE001/g, (_, i) => code[Number(i)] || '');
-  }
-
-  function renderMarkdown(source) {
-    const lines = String(source || '').replace(/\r\n?/g, '\n').split('\n');
-    const html = [];
-    let codeLines = null;
-    let codeLanguage = '';
-    let list = '';
-    let listClass = '';
-    const closeList = () => {
-      if (!list) return;
-      html.push(`</${list}>`);
-      list = '';
-      listClass = '';
-    };
-    const openList = (type, className = '') => {
-      if (list === type && listClass === className) return;
-      closeList();
-      list = type;
-      listClass = className;
-      html.push(`<${type}${className ? ` class="${className}"` : ''}>`);
-    };
-
-    for (const line of lines) {
-      const fence = /^\s*```\s*([^\s`]*)/.exec(line);
-      if (fence) {
-        if (codeLines) {
-          const language = codeLanguage ? `<span class="md-code-language">${esc(codeLanguage)}</span>` : '';
-          html.push(`<pre class="md-code">${language}<code>${esc(codeLines.join('\n'))}</code></pre>`);
-          codeLines = null;
-          codeLanguage = '';
-        } else {
-          closeList();
-          codeLines = [];
-          codeLanguage = fence[1] || '';
-        }
-        continue;
-      }
-      if (codeLines) { codeLines.push(line); continue; }
-
-      let m = /^(#{1,6})\s+(.+)$/.exec(line);
-      if (m) { closeList(); const level = m[1].length; html.push(`<h${level}>${markdownInline(m[2])}</h${level}>`); continue; }
-      if (/^\s*(?:---+|___+|\*\*\*+)\s*$/.test(line)) { closeList(); html.push('<hr>'); continue; }
-      m = /^\s*>\s?(.*)$/.exec(line);
-      if (m) { closeList(); html.push(`<blockquote>${markdownInline(m[1]) || '&nbsp;'}</blockquote>`); continue; }
-      m = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(line);
-      if (m) {
-        openList('ul', 'md-task-list');
-        html.push(`<li><input type="checkbox" disabled${m[1].toLowerCase() === 'x' ? ' checked' : ''}><span>${markdownInline(m[2])}</span></li>`);
-        continue;
-      }
-      m = /^\s*[-*+]\s+(.*)$/.exec(line);
-      if (m) { openList('ul'); html.push(`<li>${markdownInline(m[1])}</li>`); continue; }
-      m = /^\s*\d+[.)]\s+(.*)$/.exec(line);
-      if (m) { openList('ol'); html.push(`<li>${markdownInline(m[1])}</li>`); continue; }
-      closeList();
-      if (!line.trim()) html.push('<div class="md-space"></div>');
-      else html.push(`<p>${markdownInline(line)}</p>`);
-    }
-    closeList();
-    if (codeLines) {
-      const language = codeLanguage ? `<span class="md-code-language">${esc(codeLanguage)}</span>` : '';
-      html.push(`<pre class="md-code">${language}<code>${esc(codeLines.join('\n'))}</code></pre>`);
-    }
-    return html.join('');
+    const view = $('#md-view');
+    const open = currentNote();
+    if (view && open) { view._source = null; renderMdView(open); }
   }
 
   function attachmentPreviewHTML(meta, id) {
@@ -1282,8 +1298,8 @@
       const text = await response.text();
       if (!host.isConnected) return;
       if (meta.content_type === 'text/markdown') {
-        host.classList.add('markdown-preview');
-        host.innerHTML = renderMarkdown(text);
+        host.classList.add('markdown-preview', 'md');
+        host.innerHTML = LiteMd.render(text);
       } else {
         host.classList.add('plain-text-preview');
         host.textContent = text;
@@ -1326,6 +1342,9 @@
   }
 
   function insertAttachmentRef(att) {
+    // A Markdown note in View has no textarea; move it to Edit so the reference can be inserted.
+    const open = currentNote();
+    if (open && isMd(open)) enterMdEdit(open);
     const c = $('#content');
     if (!c) return;
     const ref = `\n![${att.filename}](attach:${att.id})\n`;
@@ -1461,25 +1480,26 @@
     if (!n) return;
     const title = $('#title');
     const content = $('#content');
-    if (!title || !content) return;
+    const view = $('#md-view');
+    if (!title || (!content && !view)) return;
 
-    const d = state.decrypted[n.id];
-    const nTitle = d?.title ?? n.title;
-    const nContent = normalizeContent(d?.content ?? n.content);
-    renderContentOverlay(content.value || nContent);
+    const nTitle = state.decrypted[n.id]?.title ?? n.title;
+    const nContent = editorText(n);
+    if (content) renderContentOverlay(content.value || nContent);
 
     // Keep active input only while its local mutation is pending. Once sync has
     // merged the authoritative note, refresh the DOM even if the field remains focused.
     if (dirtyId !== n.id) {
       if (title.value !== nTitle) { title.value = nTitle; autoGrow(title); }
-      if (content.value !== nContent) content.value = nContent;
+      if (content && content.value !== nContent) content.value = nContent;
+      if (view) renderMdView(n);
     }
 
     const crumbName = $('.crumb .name');
     if (crumbName && !n.deleted_at) crumbName.textContent = n.folder_id ? folderName(n.folder_id) : 'No folder';
 
-    const words = wordsOf(content.value);
-    $('#meta-words').textContent = `${words} words · ${content.value.length} characters`;
+    const text = content ? content.value : nContent;
+    $('#meta-words').textContent = `${wordsOf(text)} words · ${text.length} characters`;
     const when = n.deleted_at || n.updated_at;
     const meta = $('#meta-time');
     meta.textContent = `${n.deleted_at ? 'Deleted' : 'Modified'} ${relTime(when)}`;
@@ -1609,8 +1629,8 @@
       used.set(name, (used.get(name) || 0) + 1);
       if (used.get(name) > 1) name += `-${used.get(name)}`;
       const folder = n.folder_id ? folderName(n.folder_id) : '';
-      entries.push({ name: `notes/${name}.md`, text: `---\ntitle: ${JSON.stringify(title)}\nfolder: ${JSON.stringify(folder)}\ncreated_at: ${n.created_at}\nupdated_at: ${n.updated_at}\npinned: ${!!n.is_pinned}\n---\n\n${canonicalContent(content)}` });
-      backup.notes.push({ id: n.id, title, content, folder_id: n.folder_id || null, is_pinned: !!n.is_pinned, created_at: n.created_at, updated_at: n.updated_at });
+      entries.push({ name: `notes/${name}.md`, text: `---\ntitle: ${JSON.stringify(title)}\nfolder: ${JSON.stringify(folder)}\ncreated_at: ${n.created_at}\nupdated_at: ${n.updated_at}\npinned: ${!!n.is_pinned}\n---\n\n${isMd(n) ? content : canonicalContent(content)}` });
+      backup.notes.push({ id: n.id, title, content, format: formatOf(n), folder_id: n.folder_id || null, is_pinned: !!n.is_pinned, created_at: n.created_at, updated_at: n.updated_at });
     }
     entries.push({ name: 'litenotes-backup.json', text: JSON.stringify(backup, null, 2) });
     const blob = new Blob([buildZip(entries)], { type: 'application/zip' });
@@ -1648,7 +1668,8 @@
           if (existing && (existing.updated_at || 0) >= (nn.updated_at || 0)) continue;
           const n = existing || { id: nn.id };
           Object.assign(n, {
-            title: String(nn.title ?? ''), content: normalizeContent(nn.content ?? ''),
+            title: String(nn.title ?? ''), content: nn.format === 'md' ? String(nn.content ?? '') : normalizeContent(nn.content ?? ''),
+            format: nn.format === 'md' ? 'md' : 'text',
             folder_id: nn.folder_id || null, is_pinned: !!nn.is_pinned, deleted_at: null, draft: false,
             created_at: nn.created_at || Date.now(), updated_at: nn.updated_at || Date.now(),
             mutation_id: uid(), is_locked: false, encrypted_title: '', encrypted_content: '', enc_iv: '', enc_content_iv: '',
@@ -1745,16 +1766,18 @@
     if (!n || n.deleted_at) return;
     const title = $('#title');
     const content = $('#content');
-    rememberEdit(n, title.value, content.value);
+    // Markdown View has no textarea: only the title can change there.
+    const text = content ? content.value : (state.decrypted[n.id]?.content ?? n.content);
+    rememberEdit(n, title.value, text);
     n.title = title.value;
-    n.content = content.value;
+    n.content = text;
     n.draft = false;
     dirtyId = n.id;
     dirtyVersion += 1;
     if (n.is_locked && state.unlocked[n.id]) {
-      state.decrypted[n.id] = { title: title.value, content: content.value };
+      state.decrypted[n.id] = { title: title.value, content: text };
     }
-    renderContentOverlay(content.value);
+    if (content) renderContentOverlay(content.value);
     autoGrow(title);
     setSaveState('saving');
     clearTimeout(saveTimer);
@@ -1826,14 +1849,15 @@
     if (n.draft && !n.title.trim() && !n.content.trim()) state.notes.splice(i, 1);
   }
 
-  function newNote() {
+  function newNote(format = 'text') {
     const created = stamp();
     const n = {
       id: uid(), title: '', content: '', folder_id: state.folderFilter || '',
       created_at: created, updated_at: created, deleted_at: null,
-      mutation_id: uid(), revision: 0, server_updated_at: 0, is_locked: false, draft: true,
+      mutation_id: uid(), revision: 0, server_updated_at: 0, is_locked: false, draft: true, format,
     };
     state.notes.push(n);
+    if (format === 'md') mdEditing.add(n.id);
     state.listMode = 'notes';
     if (state.route.view !== 'notes') { state.route = { view: 'notes', noteId: null }; }
     navigate('notes', n.id);
@@ -2475,7 +2499,7 @@
             // Send only the fields noteInput accepts: the server decodes with
             // DisallowUnknownFields, so any extra key (revision, mutation_id,
             // is_locked, server_updated_at) would reject the whole batch.
-            return { mutation_id: x.mutation_id, note: { id: n.id, title: n.title, content: n.content, created_at: n.created_at, updated_at: n.updated_at, deleted_at: n.deleted_at == null ? null : n.deleted_at, folder_id: n.folder_id || '', is_pinned: !!n.is_pinned } };
+            return { mutation_id: x.mutation_id, note: { id: n.id, title: n.title, content: n.content, created_at: n.created_at, updated_at: n.updated_at, deleted_at: n.deleted_at == null ? null : n.deleted_at, folder_id: n.folder_id || '', is_pinned: !!n.is_pinned, ...(n.format ? { format: n.format } : {}) } };
           })
         }),
       });

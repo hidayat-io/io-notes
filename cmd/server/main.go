@@ -68,6 +68,7 @@ type note struct {
 	FolderID        string `json:"folder_id"`
 	IsPinned        bool   `json:"is_pinned"`
 	IsLocked        bool   `json:"is_locked"`
+	Format          string `json:"format"`
 	PasswordHash    string `json:"-"`
 }
 type mutation struct {
@@ -83,6 +84,7 @@ type noteInput struct {
 	DeletedAt *int64 `json:"deleted_at"`
 	FolderID  string `json:"folder_id"`
 	IsPinned  bool   `json:"is_pinned"`
+	Format    string `json:"format"`
 }
 type folder struct {
 	ID        string `json:"id"`
@@ -364,6 +366,7 @@ func migrate(db *sql.DB) error {
 		"ALTER TABLE notes ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE notes ADD COLUMN folder_id TEXT NOT NULL DEFAULT ''",
 		"ALTER TABLE notes ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0",
+		"ALTER TABLE notes ADD COLUMN format TEXT NOT NULL DEFAULT 'text'",
 	} {
 		if err := execIgnoreDuplicateColumn(db, alter); err != nil {
 			return err
@@ -1024,11 +1027,19 @@ func (a *application) push(w http.ResponseWriter, r *http.Request) {
 			jsonError(w, 500, "INTERNAL_ERROR", "gagal membaca note")
 			return
 		}
-		candidate := note{ID: m.Note.ID, Title: m.Note.Title, Content: m.Note.Content, FolderID: m.Note.FolderID, IsPinned: m.Note.IsPinned, CreatedAt: m.Note.CreatedAt, UpdatedAt: m.Note.UpdatedAt, DeletedAt: m.Note.DeletedAt, MutationID: m.MutationID}
+		candidate := note{ID: m.Note.ID, Title: m.Note.Title, Content: m.Note.Content, FolderID: m.Note.FolderID, IsPinned: m.Note.IsPinned, Format: m.Note.Format, CreatedAt: m.Note.CreatedAt, UpdatedAt: m.Note.UpdatedAt, DeletedAt: m.Note.DeletedAt, MutationID: m.MutationID}
+		// An empty format means "keep what is stored": a client from before this field
+		// existed never sends it, and the upsert below overwrites every column.
+		if candidate.Format == "" {
+			candidate.Format = "text"
+			if found {
+				candidate.Format = current.Format
+			}
+		}
 		status := "applied"
 		if found && compare(candidate, current) <= 0 {
 			status = "superseded"
-			if candidate.UpdatedAt == current.UpdatedAt && candidate.MutationID == current.MutationID && candidate.Title == current.Title && candidate.Content == current.Content && candidate.FolderID == current.FolderID && candidate.IsPinned == current.IsPinned && sameDeleted(candidate.DeletedAt, current.DeletedAt) {
+			if candidate.UpdatedAt == current.UpdatedAt && candidate.MutationID == current.MutationID && candidate.Title == current.Title && candidate.Content == current.Content && candidate.FolderID == current.FolderID && candidate.IsPinned == current.IsPinned && candidate.Format == current.Format && sameDeleted(candidate.DeletedAt, current.DeletedAt) {
 				status = "unchanged"
 			}
 			results = append(results, map[string]any{"mutation_id": m.MutationID, "status": status, "note": current})
@@ -1049,14 +1060,14 @@ func (a *application) push(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		now := time.Now().UnixMilli()
-		if found && (current.Title != candidate.Title || current.Content != candidate.Content || current.FolderID != candidate.FolderID || current.IsPinned != candidate.IsPinned || !sameDeleted(current.DeletedAt, candidate.DeletedAt)) {
+		if found && (current.Title != candidate.Title || current.Content != candidate.Content || current.FolderID != candidate.FolderID || current.IsPinned != candidate.IsPinned || current.Format != candidate.Format || !sameDeleted(current.DeletedAt, candidate.DeletedAt)) {
 			_, err = tx.ExecContext(r.Context(), "INSERT INTO note_audit(user_id,note_id,title,content,folder_id,deleted_at,mutation_id,created_at) VALUES(?,?,?,?,?,?,?,?)", u.ID, current.ID, current.Title, current.Content, current.FolderID, current.DeletedAt, current.MutationID, now)
 			if err != nil {
 				jsonError(w, 500, "INTERNAL_ERROR", "gagal mencatat audit note")
 				return
 			}
 		}
-		_, err = tx.ExecContext(r.Context(), `INSERT INTO notes(user_id,id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash,is_pinned) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,id) DO UPDATE SET title=excluded.title,content=excluded.content,folder_id=excluded.folder_id,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,mutation_id=excluded.mutation_id,revision=excluded.revision,server_updated_at=excluded.server_updated_at,password_hash=excluded.password_hash,is_pinned=excluded.is_pinned`, u.ID, candidate.ID, candidate.Title, candidate.Content, candidate.FolderID, candidate.CreatedAt, candidate.UpdatedAt, candidate.DeletedAt, candidate.MutationID, rev, now, candidate.PasswordHash, candidate.IsPinned)
+		_, err = tx.ExecContext(r.Context(), `INSERT INTO notes(user_id,id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash,is_pinned,format) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(user_id,id) DO UPDATE SET title=excluded.title,content=excluded.content,folder_id=excluded.folder_id,created_at=excluded.created_at,updated_at=excluded.updated_at,deleted_at=excluded.deleted_at,mutation_id=excluded.mutation_id,revision=excluded.revision,server_updated_at=excluded.server_updated_at,password_hash=excluded.password_hash,is_pinned=excluded.is_pinned,format=excluded.format`, u.ID, candidate.ID, candidate.Title, candidate.Content, candidate.FolderID, candidate.CreatedAt, candidate.UpdatedAt, candidate.DeletedAt, candidate.MutationID, rev, now, candidate.PasswordHash, candidate.IsPinned, candidate.Format)
 		if err != nil {
 			jsonError(w, 500, "INTERNAL_ERROR", "gagal menyimpan note")
 			return
@@ -1130,7 +1141,7 @@ func (a *application) pull(w http.ResponseWriter, r *http.Request) {
 	if limit > 500 {
 		limit = 500
 	}
-	rows, err := a.db.QueryContext(r.Context(), "SELECT id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash,is_pinned FROM notes WHERE user_id=? AND revision>? ORDER BY revision ASC LIMIT ?", u.ID, cursor, limit+1)
+	rows, err := a.db.QueryContext(r.Context(), "SELECT id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash,is_pinned,format FROM notes WHERE user_id=? AND revision>? ORDER BY revision ASC LIMIT ?", u.ID, cursor, limit+1)
 	if err != nil {
 		jsonError(w, 503, "DATABASE_UNAVAILABLE", "database tidak tersedia")
 		return
@@ -1413,6 +1424,9 @@ func validateMutation(m mutation, serverNow int64) error {
 	if !canonicalUUID.MatchString(m.MutationID) || !canonicalUUID.MatchString(m.Note.ID) {
 		return reject("mutation_id dan note.id harus UUID v4 canonical lowercase")
 	}
+	if m.Note.Format != "" && m.Note.Format != "text" && m.Note.Format != "md" {
+		return reject("format harus text atau md")
+	}
 	if len([]rune(m.Note.Title)) > 500 {
 		return reject("title maksimal 500 karakter")
 	}
@@ -1463,7 +1477,7 @@ type rowScanner interface{ Scan(...any) error }
 func scanNote(s rowScanner) (note, error) {
 	var n note
 	var d sql.NullInt64
-	err := s.Scan(&n.ID, &n.Title, &n.Content, &n.FolderID, &n.CreatedAt, &n.UpdatedAt, &d, &n.MutationID, &n.Revision, &n.ServerUpdatedAt, &n.PasswordHash, &n.IsPinned)
+	err := s.Scan(&n.ID, &n.Title, &n.Content, &n.FolderID, &n.CreatedAt, &n.UpdatedAt, &d, &n.MutationID, &n.Revision, &n.ServerUpdatedAt, &n.PasswordHash, &n.IsPinned, &n.Format)
 	n.IsLocked = n.PasswordHash != ""
 	if d.Valid {
 		n.DeletedAt = &d.Int64
@@ -1475,7 +1489,7 @@ func getNote(ctx context.Context, q interface {
 }, userID, id string) (note, bool, error) {
 	var n note
 	var d sql.NullInt64
-	err := q.QueryRowContext(ctx, "SELECT id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash,is_pinned FROM notes WHERE user_id=? AND id=?", userID, id).Scan(&n.ID, &n.Title, &n.Content, &n.FolderID, &n.CreatedAt, &n.UpdatedAt, &d, &n.MutationID, &n.Revision, &n.ServerUpdatedAt, &n.PasswordHash, &n.IsPinned)
+	err := q.QueryRowContext(ctx, "SELECT id,title,content,folder_id,created_at,updated_at,deleted_at,mutation_id,revision,server_updated_at,password_hash,is_pinned,format FROM notes WHERE user_id=? AND id=?", userID, id).Scan(&n.ID, &n.Title, &n.Content, &n.FolderID, &n.CreatedAt, &n.UpdatedAt, &d, &n.MutationID, &n.Revision, &n.ServerUpdatedAt, &n.PasswordHash, &n.IsPinned, &n.Format)
 	if errors.Is(err, sql.ErrNoRows) {
 		return note{}, false, nil
 	}
