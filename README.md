@@ -12,7 +12,7 @@
 - 📴 **Offline-First PWA**: Read and edit your notes anytime without internet connectivity. Changes are queued locally and synced automatically when back online.
 - 💻 **Apple Notes-Style 3-Pane Layout**: Clean desktop interface split into **Folder Navigation**, **Note List**, and a **Full-Width Editor**. Responsive drill-down navigation on mobile screens.
 - 📁 **Folders & Trash Management**: Organize notes into custom folders, search notes instantly, and recover deleted items from Trash.
-- 🔒 **Note Lock / Password Protection**: Secure individual sensitive notes with password encryption.
+- 🔒 **Note Lock**: Put a password on individual notes. The note is encrypted on your device and asks for the password before it opens. It is an access lock, not end-to-end encryption: the note text still syncs to the server.
 - 📎 **Private Attachments & Preview**: Upload images and documents to private object storage, with inline previews for images, Markdown, plain text, and PDF.
 - 📝 **Markdown Notes**: Switch any note to Markdown, or start one with the Markdown button, and read it rendered by default: headings, nested lists, tables, task lists, code and links. Edit shows the exact text; shared links render Markdown too.
 - 🔗 **Share via Link**: Share a note as a read-only link (`/s#<token>`) that opens without signing in. The owner can turn the link off or regenerate it at any time. Attachments are not included.

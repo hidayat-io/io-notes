@@ -2172,7 +2172,7 @@
     if (!n.is_locked) {
       const values = await modal({
         title: 'Lock note',
-        description: 'AES-256 end-to-end encryption — content is encrypted locally, plaintext is never stored on server.',
+        description: 'Asks for this password before the note opens, and keeps the note encrypted on this device. This is not end-to-end encryption: the note text is still synced to the server so it can reach your other devices.',
         fields: [
           { name: 'password', label: 'New password', type: 'password', minlength: 8, required: true, placeholder: 'At least 8 characters', autocomplete: 'new-password' },
           { name: 'confirm', label: 'Confirm password', type: 'password', required: true, autocomplete: 'new-password' },
